@@ -711,9 +711,9 @@ impl FlattenTree for cir::Control {
         _: &mut Self::MutAuxiliaryData,
     ) -> Self::Output {
         let (group_map, layout, ctx, comp_info) = aux;
-        let ctrl = match self {
+        match self {
             cir::Control::FSMEnable(_) => todo!(),
-            cir::Control::Seq(s) => Control::Seq(Seq::new(
+            cir::Control::Seq(s) => ControlNode::Seq(Seq::new(
                 s.stmts.iter().map(|s| handle.enqueue(s)),
             )),
             cir::Control::Par(p) => Control::Par(Par::new(
