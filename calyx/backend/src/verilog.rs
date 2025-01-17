@@ -1328,8 +1328,8 @@ fn unflattened_guard(guard: &ir::Guard<Nothing>) -> String {
         Guard::Not(inner) => format!("~({})", unflattened_guard(inner)),
 
         Guard::Port(port) => format!("{}", VerilogPortRef(port)),
-        Guard::True => format!("1'd1"),
-        Guard::Info(_) => format!("1'd1"),
+        Guard::True => "1'd1".to_string(),
+        Guard::Info(_) => "1'd1".to_string(),
     }
 }
 
