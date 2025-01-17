@@ -63,6 +63,7 @@ impl PassManager {
         pm.register_pass::<CompileSync>()?;
         pm.register_pass::<CompileSyncWithoutSyncReg>()?;
         pm.register_pass::<AddGuard>()?;
+        pm.register_pass::<DynamicFSMAllocation>()?;
 
         // Lowering passes
         pm.register_pass::<GoInsertion>()?;
@@ -163,8 +164,7 @@ impl PassManager {
                 StaticFSMOpts,
                 CompileStatic,
                 DeadGroupRemoval,
-                TopDownCompileControl,
-                TopDownCompileControl,
+                DynamicFSMAllocation,
             ]
         );
         register_alias!(

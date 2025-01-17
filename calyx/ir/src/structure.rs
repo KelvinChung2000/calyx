@@ -1,5 +1,6 @@
 //! Representation for structure (wires and cells) in a Calyx program.
 
+use crate::guard::StaticTiming;
 use crate::Nothing;
 use crate::guard::StaticTiming;
 
@@ -11,6 +12,8 @@ use calyx_utils::{CalyxResult, Error, GetName};
 use itertools::Itertools;
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
+use smallvec::{smallvec, SmallVec};
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -20,6 +23,7 @@ pub enum PortParent {
     Cell(WRC<Cell>),
     Group(WRC<Group>),
     StaticGroup(WRC<StaticGroup>),
+    FSM(WRC<FSM>),
     FSM(WRC<FSM>),
 }
 
@@ -93,6 +97,7 @@ impl Port {
         match &self.parent {
             PortParent::Cell(cell) => cell.upgrade().borrow().name,
             PortParent::Group(group) => group.upgrade().borrow().name,
+            PortParent::FSM(fsm) => fsm.upgrade().borrow().name,
             PortParent::FSM(fsm) => fsm.upgrade().borrow().name,
             PortParent::StaticGroup(group) => group.upgrade().borrow().name,
         }
@@ -614,7 +619,7 @@ impl<StaticTiming> Assignment<StaticTiming> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 pub enum Transition {
     Unconditional(u64),
@@ -829,6 +834,8 @@ impl CombGroup {
 pub struct FSM {
     /// Name of this construct
     pub(super) name: Id,
+    /// Number of states in this FSM
+    pub num_states: u64,
     /// Attributes for this FSM
     pub attributes: Attributes,
     /// State indexes into assignments that are supposed to be enabled at that state
@@ -849,6 +856,7 @@ impl FSM {
     pub fn new(name: Id) -> Self {
         Self {
             name,
+            num_states: 0,
             assignments: vec![],
             transitions: vec![],
             wires: SmallVec::new(),
@@ -878,18 +886,6 @@ impl FSM {
         })
     }
 
-    /// Extend the FSM with new transitions and assignments. Will panic if
-    /// the lengths are not consistent.
-    pub fn extend_fsm<A, T>(&mut self, assigns: A, transitions: T)
-    where
-        A: IntoIterator<Item = Vec<Assignment<Nothing>>>,
-        T: IntoIterator<Item = Transition>,
-    {
-        self.assignments.extend(assigns);
-        self.transitions.extend(transitions);
-    }
-
-    /// Extend the assignments that are supposed to be active at a given state.
     pub fn extend_state_assignments<I>(&mut self, state: u64, assigns: I)
     where
         I: IntoIterator<Item = Assignment<Nothing>>,
@@ -985,6 +981,12 @@ impl GetName for FSM {
 }
 
 impl GetName for StaticGroup {
+    fn name(&self) -> Id {
+        self.name()
+    }
+}
+
+impl GetName for FSM {
     fn name(&self) -> Id {
         self.name()
     }

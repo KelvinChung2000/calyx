@@ -22,9 +22,7 @@ fn port_is_static_prim(port: &ir::Port) -> bool {
         ir::PortParent::Cell(cell_wref) => cell_wref.upgrade(),
         ir::PortParent::Group(_)
         | ir::PortParent::StaticGroup(_)
-        | ir::PortParent::FSM(_) => {
-            return false;
-        }
+        | ir::PortParent::FSM(_) => return false,
     };
     // if celltype is this component/constant, then obviously not static
     // if primitive, then we can quickly check whether it is static

@@ -1023,6 +1023,7 @@ impl CompileStatic {
                         PortParent::Cell(_) => true,
                         // Don't add assignment to `group[done]`
                         PortParent::Group(_) => dst.name != "done",
+                        PortParent::FSM(_) => unreachable!(),
                         PortParent::StaticGroup(_) => true,
                         PortParent::FSM(_) => unreachable!(),
                     }

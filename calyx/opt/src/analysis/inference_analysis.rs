@@ -329,66 +329,59 @@ impl InferenceAnalysis {
     fn contains_dyn_writes(&self, graph: &GraphAnalysis) -> bool {
         for port in &graph.ports() {
             match &port.borrow().parent {
-                ir::PortParent::Cell(cell_wrf) => {
-                    let cr = cell_wrf.upgrade();
-                    let cell = cr.borrow();
-                    if let Some(ports) =
-                        cell.type_name().and_then(|c| self.latency_data.get(&c))
-                    {
-                        let name = &port.borrow().name;
-                        if ports.is_go(name) {
-                            for write_port in graph.writes_to(&port.borrow()) {
-                                if !self
-                                    .is_done_port_or_const(&write_port.borrow())
-                                {
-                                    log::debug!(
-                                        "`{}` is not a done port",
-                                        write_port.borrow().canonical(),
-                                    );
-                                    return true;
-                                }
-                            }
+              ir::PortParent::Cell(cell_wrf) => {
+                  let cr = cell_wrf.upgrade();
+                  let cell = cr.borrow();
+                  if let Some(ports) =
+                      cell.type_name().and_then(|c| self.latency_data.get(&c))
+                  {
+                      let name = &port.borrow().name;
+                      if ports.is_go(name) {
+                          for write_port in graph.writes_to(&port.borrow()) {
+                              if !self
+                                  .is_done_port_or_const(&write_port.borrow())
+                              {
+                                  log::debug!(
+                                      "`{}` is not a done port",
+                                      write_port.borrow().canonical(),
+                                  );
+                                  return true;
+                              }
+                          }
+                      }
+                  }
+              }
+              ir::PortParent::Group(_) => {
+                  if port.borrow().name == "done" {
+                      for write_port in graph.writes_to(&port.borrow()) {
+                          if !self.is_done_port_or_const(&write_port.borrow())
+                          {
+                              log::debug!(
+                                  "`{}` is not a done port",
+                                  write_port.borrow().canonical(),
+                              );
+                              return true;
+                          }
+                      }
+                  }
+              }
+              ir::PortParent::FSM(_) => {
+                if port.borrow().name == "done" {
+                    for write_port in graph.writes_to(&port.borrow()) {
+                        if !self.is_done_port_or_const(&write_port.borrow())
+                        {
+                            log::debug!(
+                                "`{}` is not a done port",
+                                write_port.borrow().canonical(),
+                            );
+                            return true;
                         }
                     }
                 }
-                ir::PortParent::Group(_) => {
-                    if port.borrow().name == "done" {
-                        for write_port in graph.writes_to(&port.borrow()) {
-                            if !self.is_done_port_or_const(&write_port.borrow())
-                            {
-                                log::debug!(
-                                    "`{}` is not a done port",
-                                    write_port.borrow().canonical(),
-                                );
-                                return true;
-                            }
-                        }
-                    }
-                }
-
-                ir::PortParent::FSM(_) => {
-                    if port.borrow().name == "done" {
-                        for write_port in graph.writes_to(&port.borrow()) {
-                            if !self.is_done_port_or_const(&write_port.borrow())
-                            {
-                                log::debug!(
-                                    "`{}` is not a done port",
-                                    write_port.borrow().canonical(),
-                                );
-                                return true;
-                            }
-                        }
-                    }
-                }
-
-                ir::PortParent::StaticGroup(_) =>
-                // done ports of static groups should clearly NOT have static latencies
-                {
-                    panic!(
-                        "Have not decided how to handle static groups in infer-static-timing"
-                    )
-                }
-            }
+              }
+              ir::PortParent::StaticGroup(_) => // done ports of static groups should clearly NOT have static latencies
+              panic!("Have not decided how to handle static groups in infer-static-timing"),
+          }
         }
         false
     }

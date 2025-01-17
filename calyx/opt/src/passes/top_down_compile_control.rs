@@ -49,7 +49,7 @@ const DUPLICATE_NUM_REG: u64 = 2;
 /// The exit set is `[(8, tru[done] & !comb_reg.out), (9, fal & !comb_reg.out)]`.
 fn control_exits(con: &ir::Control, exits: &mut Vec<PredEdge>) {
     match con {
-        ir::Control::Empty(_) => {}
+        ir::Control::Empty(_) |  ir::Control::FSMEnable(_)=> {}
         ir::Control::Enable(ir::Enable { group, attributes }) => {
             let cur_state = attributes.get(NODE_ID).unwrap();
             exits.push((cur_state, guard!(group["done"])))
@@ -215,8 +215,13 @@ fn compute_unique_ids(con: &mut ir::Control, cur_state: u64) -> u64 {
             let body_nxt = compute_unique_ids(body, cur);
             // If new_fsm is true then we want to return cur_state + 1, since this
             // while loop should really only take up 1 "state" on the "outer" fsm
-            if new_fsm { cur_state + 1 } else { body_nxt }
+            if new_fsm{
+                cur_state + 1
+            } else {
+                body_nxt
+            }
         }
+        ir::Control::FSMEnable(_) => todo!("should not encounter fsm nodes"),
         ir::Control::Empty(_) => cur_state,
         ir::Control::Repeat(_) => unreachable!(
             "`repeat` statements should have been compiled away. Run `{}` before this pass.",
@@ -910,124 +915,19 @@ impl Schedule<'_, '_> {
         has_fast_guarantee: bool,
     ) -> CalyxResult<Vec<PredEdge>> {
         match con {
-            ir::Control::FSMEnable(ir::FSMEnable { fsm, attributes }) => {
-                let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| {
-                    panic!(
-                        "Group `{}` does not have state_id information",
-                        fsm.borrow().name()
-                    )
-                });
-                let (cur_state, prev_states) =
-                    if preds.len() == 1 && preds[0].1.is_true() {
-                        (preds[0].0, vec![])
-                    } else {
-                        (cur_state, preds)
-                    };
-                // Add group to mapping for emitting group JSON info
-                self.groups_to_states.insert(FSMStateInfo {
-                    id: cur_state,
-                    group: fsm.borrow().name(),
-                });
-
-                let not_done = !guard!(fsm["done"]);
-                let signal_on = self.builder.add_constant(1, 1);
-
-                // Activate this fsm in the current state
-                let en_go: [ir::Assignment<Nothing>; 1] = build_assignments!(self.builder;
-                    fsm["start"] = not_done ? signal_on["out"];
-                );
-
-                self.fsm_enables.entry(cur_state).or_default().extend(en_go);
-
-                // Enable FSM to be triggered by states besides the most recent
-                if early_transitions || has_fast_guarantee {
-                    for (st, g) in &prev_states {
-                        let early_go = build_assignments!(self.builder;
-                            fsm["start"] = g ? signal_on["out"];
-                        );
-                        self.fsm_enables
-                            .entry(*st)
-                            .or_default()
-                            .extend(early_go);
-                    }
-                }
-
-                let transitions = prev_states
-                    .into_iter()
-                    .map(|(st, guard)| (st, cur_state, guard));
-                self.transitions.extend(transitions);
-
-                let done_cond = guard!(fsm["done"]);
-                Ok(vec![(cur_state, done_cond)])
-            }
-            ir::Control::FSMEnable(ir::FSMEnable { fsm, attributes }) => {
-                let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| {
-                    panic!(
-                        "Group `{}` does not have state_id information",
-                        fsm.borrow().name()
-                    )
-                });
-                let (cur_state, prev_states) =
-                    if preds.len() == 1 && preds[0].1.is_true() {
-                        (preds[0].0, vec![])
-                    } else {
-                        (cur_state, preds)
-                    };
-                // Add group to mapping for emitting group JSON info
-                self.groups_to_states.insert(FSMStateInfo {
-                    id: cur_state,
-                    group: fsm.borrow().name(),
-                });
-
-                let not_done = !guard!(fsm["done"]);
-                let signal_on = self.builder.add_constant(1, 1);
-
-                // Activate this fsm in the current state
-                let en_go: [ir::Assignment<Nothing>; 1] = build_assignments!(self.builder;
-                    fsm["start"] = not_done ? signal_on["out"];
-                );
-
-                self.fsm_enables.entry(cur_state).or_default().extend(en_go);
-
-                // Enable FSM to be triggered by states besides the most recent
-                if early_transitions || has_fast_guarantee {
-                    for (st, g) in &prev_states {
-                        let early_go = build_assignments!(self.builder;
-                            fsm["start"] = g ? signal_on["out"];
-                        );
-                        self.fsm_enables
-                            .entry(*st)
-                            .or_default()
-                            .extend(early_go);
-                    }
-                }
-
-                let transitions = prev_states
-                    .into_iter()
-                    .map(|(st, guard)| (st, cur_state, guard));
-                self.transitions.extend(transitions);
-
-                let done_cond = guard!(fsm["done"]);
-                Ok(vec![(cur_state, done_cond)])
-            }
-            // See explanation of FSM states generated in [ir::TopDownCompileControl].
-            ir::Control::Enable(ir::Enable { group, attributes }) => {
-                let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| {
-                    panic!(
-                        "Group `{}` does not have node_id information",
-                        group.borrow().name()
-                    )
-                });
-                // If there is exactly one previous transition state with a `true`
-                // guard, then merge this state into previous state.
-                // This happens when the first control statement is an enable not
-                // inside a branch.
-                let (cur_state, prev_states) =
-                    if preds.len() == 1 && preds[0].1.is_true() {
-                        (preds[0].0, vec![])
-                    } else {
-                        (cur_state, preds)
-                    };
+            ir::Control::FSMEnable(_) => todo!("should not encounter fsm nodes"),
+        // See explanation of FSM states generated in [ir::TopDownCompileControl].
+        ir::Control::Enable(ir::Enable { group, attributes }) => {
+            let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| panic!("Group `{}` does not have node_id information", group.borrow().name()));
+            // If there is exactly one previous transition state with a `true`
+            // guard, then merge this state into previous state.
+            // This happens when the first control statement is an enable not
+            // inside a branch.
+            let (cur_state, prev_states) = if preds.len() == 1 && preds[0].1.is_true() {
+                (preds[0].0, vec![])
+            } else {
+                (cur_state, preds)
+            };
 
                 // Add group to mapping for emitting group JSON info
                 self.groups_to_states.insert(FSMStateInfo {

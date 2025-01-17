@@ -146,7 +146,7 @@ impl Visitor for DeadGroupRemoval {
             }
         }
 
-        // add all groups invoked by each fsm
+        // for now, add all groups invoked by each fsm
         for fsm in comp.get_fsms().iter() {
             self.used_groups.extend(
                 fsm.borrow().get_called_port_parents(
