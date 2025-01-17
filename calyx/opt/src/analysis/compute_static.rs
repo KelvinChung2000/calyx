@@ -54,6 +54,7 @@ impl WithStatic for ir::Control {
             ir::Control::FSMEnable(_) => todo!(),
             ir::Control::Empty(_) => Some(0),
             ir::Control::Static(sc) => Some(sc.get_latency()),
+            ir::Control::FSMEnable(_) => todo!(),
         }
     }
 }

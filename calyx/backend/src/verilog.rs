@@ -513,6 +513,7 @@ fn emit_component<F: io::Write>(
     for fsm in comp.fsms.iter() {
         emit_fsm_module(fsm, comp.name, f)?;
     }
+
     writeln!(f, "module {}(", comp.name)?;
 
     let sig = comp.signature.borrow();
@@ -579,7 +580,9 @@ fn emit_component<F: io::Write>(
     }
 
     // Emit FSMs
-    emit_fsms(comp.fsms.iter().map(ir::RRC::clone).collect(), comp.name, f)?;
+    for fsm in comp.fsms.iter() {
+        emit_fsm(fsm, comp.name, f)?;
+    }
 
     // Flatten all the guard expressions.
     let mut pool = ir::GuardPool::new();
@@ -672,6 +675,7 @@ fn wire_decls(cell: &ir::Cell) -> Vec<(String, u64, ir::Direction)> {
                 }
             }
             ir::PortParent::Group(_) => unreachable!(),
+            ir::PortParent::FSM(_) => todo!(),
             ir::PortParent::FSM(_) => todo!(),
             ir::PortParent::StaticGroup(_) => unreachable!(),
         })
@@ -1178,6 +1182,7 @@ fn port_to_ref(port_ref: &RRC<ir::Port>) -> v::Expr {
         }
         ir::PortParent::Group(_) => unreachable!(),
         ir::PortParent::FSM(_) => todo!(),
+        ir::PortParent::FSM(_) => todo!(),
         ir::PortParent::StaticGroup(_) => unreachable!(),
     }
 }
@@ -1253,6 +1258,7 @@ impl std::fmt::Display for VerilogPortRef<'_> {
             }
             ir::PortParent::Group(_) => unreachable!(),
             ir::PortParent::FSM(_) => todo!(),
+            ir::PortParent::FSM(_) => todo!(),
             ir::PortParent::StaticGroup(_) => unreachable!(),
         }
     }
@@ -1290,8 +1296,8 @@ fn unflattened_guard(guard: &ir::Guard<Nothing>) -> String {
         Guard::Not(inner) => format!("~({})", unflattened_guard(inner)),
 
         Guard::Port(port) => format!("{}", VerilogPortRef(port)),
-        Guard::True => "1'd1".to_string(),
-        Guard::Info(_) => "1'd1".to_string(),
+        Guard::True => format!("1'd1"),
+        Guard::Info(_) => format!("1'd1"),
     }
 }
 
