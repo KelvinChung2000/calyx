@@ -834,8 +834,7 @@ impl CombGroup {
 pub struct FSM {
     /// Name of this construct
     pub(super) name: Id,
-    /// Number of states in this FSM
-    pub num_states: u64,
+
     /// Attributes for this FSM
     pub attributes: Attributes,
     /// State indexes into assignments that are supposed to be enabled at that state
@@ -856,7 +855,6 @@ impl FSM {
     pub fn new(name: Id) -> Self {
         Self {
             name,
-            num_states: 0,
             assignments: vec![],
             transitions: vec![],
             wires: SmallVec::new(),
