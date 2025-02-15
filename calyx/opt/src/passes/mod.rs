@@ -44,7 +44,6 @@ mod unroll_bound;
 mod well_formed;
 mod wire_inliner;
 mod wrap_main;
-
 pub use canonical::Canonicalize;
 pub use cell_share::CellShare;
 pub use clk_insertion::ClkInsertion;
@@ -60,6 +59,8 @@ pub use dead_assignment_removal::DeadAssignmentRemoval;
 pub use dead_cell_removal::DeadCellRemoval;
 pub use dead_group_removal::DeadGroupRemoval;
 pub use dump_ports::DumpResults;
+pub use static_fsm_allocation::StaticFSMAllocation;
+
 pub use externalize::Externalize;
 pub use go_insertion::GoInsertion;
 pub use group_to_invoke::GroupToInvoke;
