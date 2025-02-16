@@ -596,12 +596,11 @@ impl From<Assignment<Nothing>> for Assignment<StaticTiming> {
 impl From<Assignment<StaticTiming>> for Assignment<Nothing> {
     /// Turns a static assignment into a normal assignment by getting rid of
     /// all `Info<StaticTiming>` leaves from the guard of the assignment.
-    fn from(mut assgn: Assignment<StaticTiming>) -> Assignment<Nothing> {
-        assgn.guard.as_mut().remove_static_timing_info();
+    fn from(assgn: Assignment<StaticTiming>) -> Assignment<Nothing> {
         Assignment {
             dst: Rc::clone(&assgn.dst),
             src: Rc::clone(&assgn.src),
-            guard: Box::new(Guard::from(*assgn.guard)),
+            guard: Box::new(Guard::True),
             attributes: assgn.attributes,
         }
     }
