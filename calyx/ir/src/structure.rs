@@ -571,12 +571,11 @@ impl<T> Assignment<T> {
             .chain(std::iter::once(Rc::clone(&self.src)))
     }
 
-    /// Mutate the guard `g` of the assignment in-place to be `g AND addition`
-    pub fn and_guard(&mut self, addition: Guard<T>)
+    pub fn and_guard(&mut self, addition_opt: Option<Guard<T>>)
     where
         T: Eq,
     {
-        if !(addition.is_true()) {
+        if let Some(addition) = addition_opt {
             self.guard.update(|g| g.and(addition));
         }
     }
