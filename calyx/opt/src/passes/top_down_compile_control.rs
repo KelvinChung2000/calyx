@@ -133,10 +133,6 @@ fn compute_unique_ids(con: &mut ir::Control, cur_state: u64) -> u64 {
             attributes.insert(NODE_ID, cur_state);
             cur_state + 1
         }
-        ir::Control::FSMEnable(ir::FSMEnable { attributes, .. }) => {
-            attributes.insert(NODE_ID, cur_state);
-            cur_state + 1
-        }
         ir::Control::Par(ir::Par { stmts, attributes }) => {
             attributes.insert(NODE_ID, cur_state);
             stmts.iter_mut().for_each(|stmt| {
@@ -215,7 +211,6 @@ fn compute_unique_ids(con: &mut ir::Control, cur_state: u64) -> u64 {
                 body_nxt
             }
         }
-        ir::Control::FSMEnable(_) => todo!("should not encounter fsm nodes"),
         ir::Control::Empty(_) => cur_state,
         ir::Control::Repeat(_) => unreachable!(
             "`repeat` statements should have been compiled away. Run `{}` before this pass.",
@@ -749,6 +744,7 @@ impl Schedule<'_, '_> {
                     None => vec![],
                     Some(assigns) => assigns.clone(),
                 };
+
                 // self-loop if all other guards are not met;
                 // should be at the end of the conditional destinations vec!
                 cond_dsts.push((ir::Guard::True, state));
@@ -825,17 +821,17 @@ impl Schedule<'_, '_> {
                 };
                 // Add group to mapping for emitting group JSON info
                 self.groups_to_states.insert(FSMStateInfo { id: cur_state, group: fsm.borrow().name() });
-
+    
                 let not_done = ir::Guard::True;
                 let signal_on = self.builder.add_constant(1, 1);
-
+    
                 // Activate this fsm in the current state
                 let en_go : [ir::Assignment<Nothing>; 1] = build_assignments!(self.builder;
                     fsm["start"] = not_done ? signal_on["out"];
                 );
-
+    
                 self.fsm_enables.entry(cur_state).or_default().extend(en_go);
-
+    
                 // Enable FSM to be triggered by states besides the most recent
                 if early_transitions || has_fast_guarantee {
                     for (st, g) in &prev_states {
@@ -845,15 +841,15 @@ impl Schedule<'_, '_> {
                         self.fsm_enables.entry(*st).or_default().extend(early_go);
                     }
                 }
-
+    
                 let transitions = prev_states
                     .into_iter()
                     .map(|(st, guard)| (st, cur_state, guard));
                 self.transitions.extend(transitions);
-
+    
                 let done_cond = guard!(fsm["done"]);
                 Ok(vec![(cur_state, done_cond)])
-
+    
             },
         // See explanation of FSM states generated in [ir::TopDownCompileControl].
         ir::Control::Enable(ir::Enable { group, attributes }) => {
@@ -1482,6 +1478,7 @@ impl Visitor for TopDownCompileControl {
         seq_enable.get_mut_attributes().insert(NODE_ID, state_id);
 
         Ok(Action::change(seq_enable))
+       
     }
 
     fn finish_if(
@@ -1718,6 +1715,7 @@ impl Visitor for TopDownCompileControl {
         sigs: &LibrarySignatures,
         _comps: &[ir::Component],
     ) -> VisResult {
+
         let control = Rc::clone(&comp.control);
         let attrs = comp.attributes.clone();
         let mut builder = ir::Builder::new(comp, sigs);
