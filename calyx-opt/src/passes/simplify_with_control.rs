@@ -152,7 +152,9 @@ impl Visitor for SimplifyWithControl {
                             Rc::clone(&group_ref),
                         ),
                     );
-
+                    comb_reg
+                        .borrow_mut()
+                        .add_attribute(ir::BoolAttr::Control, 1);
                     save_regs.push(comb_reg);
                 }
 

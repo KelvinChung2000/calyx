@@ -2,7 +2,7 @@ use super::Attribute;
 use crate::InlineAttributes;
 use calyx_utils::{CalyxResult, GPosIdx, WithPos};
 use linked_hash_map::LinkedHashMap;
-use std::convert::TryFrom;
+use std::{convert::TryFrom, fmt::Display};
 
 #[derive(Debug, Clone, Default)]
 /// Attribute information stored on the Heap
@@ -36,6 +36,16 @@ impl TryFrom<Vec<(Attribute, u64)>> for Attributes {
             attrs.insert(k, v);
         }
         Ok(attrs)
+    }
+}
+
+impl Display for Attributes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.to_string_with(", ", |k, v| format!("{}={}", k, v))
+        )
     }
 }
 

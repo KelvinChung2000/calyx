@@ -1,0 +1,3 @@
+read_verilog -sv /home/kelvin/calyx/gemm_smaller_fsm.sv
+hierarchy -top main
+check -assert

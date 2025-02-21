@@ -53,14 +53,6 @@ impl Visitor for Canonicalize {
         _ctx: &LibrarySignatures,
         _comps: &[ir::Component],
     ) -> VisResult {
-        comp.for_each_assignment(|assign| {
-            if let Guard::Port(p) = &(*assign.guard) {
-                // 1'd1 ? r1.done
-                if p.borrow().is_constant_value(1, 1) {
-                    assign.guard = Guard::True.into()
-                }
-            }
-        });
         comp.for_each_static_assignment(|assign| {
             if let Guard::Port(p) = &(*assign.guard) {
                 // 1'd1 ? r1.done

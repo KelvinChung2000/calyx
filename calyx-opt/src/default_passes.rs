@@ -154,7 +154,8 @@ impl PassManager {
                 DeadGroupRemoval,
                 CombProp,
                 DeadAssignmentRemoval,
-                DeadCellRemoval
+                DeadCellRemoval,
+                DataPathInfer,
             ]
         );
         register_alias!(

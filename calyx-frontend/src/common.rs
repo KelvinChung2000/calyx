@@ -1,7 +1,5 @@
-use std::path::Display;
-
 use super::Attributes;
-use crate::Attribute;
+use crate::{Attribute, GetAttributes};
 use calyx_utils::{CalyxResult, Error, GetName, Id};
 use linked_hash_map::LinkedHashMap;
 use smallvec::SmallVec;
@@ -119,7 +117,6 @@ impl<W> PortDef<W> {
             matches!(direction, Direction::Input | Direction::Output),
             "Direction must be either Input or Output"
         );
-
         Self {
             name: name.into(),
             width,
@@ -131,6 +128,32 @@ impl<W> PortDef<W> {
     /// Return the name of the port definition
     pub fn name(&self) -> Id {
         self.name
+    }
+
+    /// Returns the value of an attribute if present
+    pub fn get_attribute<A>(&self, attr: A) -> Option<u64>
+    where
+        A: Into<Attribute>,
+    {
+        self.get_attributes().get(attr)
+    }
+
+    /// Returns true if the node has a specific attribute
+    pub fn has_attribute<A>(&self, attr: A) -> bool
+    where
+        A: Into<Attribute>,
+    {
+        self.get_attributes().has(attr)
+    }
+}
+
+impl<W> GetAttributes for PortDef<W> {
+    fn get_attributes(&self) -> &Attributes {
+        &self.attributes
+    }
+
+    fn get_mut_attributes(&mut self) -> &mut Attributes {
+        &mut self.attributes
     }
 }
 

@@ -11,7 +11,7 @@ use calyx_opt::passes::math_utilities::get_bit_width_from;
 use calyx_utils::{CalyxResult, Error, OutputFile};
 use ir::Nothing;
 use itertools::Itertools;
-use std::collections::{hash_map, BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::rc::Rc;
 use std::{fs::File, time::Instant};
@@ -114,6 +114,17 @@ impl Backend for VerilogBackend {
         ctx: &ir::Context,
         file: &mut OutputFile,
     ) -> CalyxResult<()> {
+        let mut cells = HashSet::new();
+        for c in ctx.components.iter() {
+            for cell in c.cells.iter() {
+                if let Some(name) = cell.borrow().prototype.get_name() {
+                    cells.insert(name);
+                }
+            }
+        }
+
+        print!("Cells: {:?}", cells);
+
         let fw = &mut file.get_write();
         for extern_path in &ctx.lib.extern_paths() {
             // The extern file is guaranteed to exist by the frontend.
@@ -182,12 +193,27 @@ fn emit_prim_inline<F: io::Write>(
     writeln!(f, " (")?;
     for (idx, port) in prim.signature.iter().enumerate() {
         // NOTE: The signature port definitions are reversed inside the component.
+
+        let attr_str = format!(
+            "(* {} *)",
+            port.attributes
+                .to_string_with(", ", |k, v| format!("{}={}", k, v))
+        );
+
         match port.direction {
             ir::Direction::Input => {
-                write!(f, "   input wire")?;
+                if port.attributes.is_empty() {
+                    write!(f, "   input wire")?;
+                } else {
+                    write!(f, "   {} input wire", attr_str)?;
+                }
             }
             ir::Direction::Output => {
-                write!(f, "   output")?;
+                if port.attributes.is_empty() {
+                    write!(f, "   output wire")?;
+                } else {
+                    write!(f, "   {} output wire", attr_str)?;
+                }
             }
             ir::Direction::Inout => {
                 panic!("Unexpected Inout port on Component: {}", port.name())
@@ -245,13 +271,28 @@ fn emit_component<F: io::Write>(
     let sig = comp.signature.borrow();
     for (idx, port_ref) in sig.ports.iter().enumerate() {
         let port = port_ref.borrow();
+
+        let attr_str = format!(
+            "(* {} *)",
+            port.attributes
+                .to_string_with(", ", |k, v| format!("{}={}", k, v))
+        );
+
         // NOTE: The signature port definitions are reversed inside the component.
         match port.direction {
             ir::Direction::Input => {
-                write!(f, "  output")?;
+                if port.attributes.is_empty() {
+                    write!(f, "  output")?;
+                } else {
+                    write!(f, "  {} output", attr_str)?;
+                }
             }
             ir::Direction::Output => {
-                write!(f, "  input")?;
+                if port.attributes.is_empty() {
+                    write!(f, "  input")?;
+                } else {
+                    write!(f, "  {} input", attr_str)?;
+                }
             }
             ir::Direction::Inout => {
                 panic!("Unexpected Inout port on Component: {}", port.name)
@@ -292,10 +333,22 @@ fn emit_component<F: io::Write>(
     })?;
 
     // cell instances
-    comp.cells
+    for (cell, instance) in comp
+        .cells
         .iter()
-        .filter_map(|cell| cell_instance(&cell.borrow()))
-        .try_for_each(|instance| writeln!(f, "{instance}"))?;
+        .filter_map(|cell| Some((cell, cell_instance(&cell.borrow()))))
+    {
+        let attr_str = format!(
+            "(* {} *)",
+            cell.borrow()
+                .attributes
+                .to_string_with(", ", |k, v| format!("{}={}", k, v))
+        );
+
+        if let Some(inst) = instance {
+            writeln!(f, "{}\n{}\n", attr_str, inst)?;
+        }
+    }
 
     // gather assignments keyed by destination
     let mut map: HashMap<_, (RRC<ir::Port>, Vec<_>)> = HashMap::new();
@@ -498,14 +551,11 @@ fn emit_fsm<F: io::Write>(
     let mut used_port_names: HashSet<String> = HashSet::new();
     let mut port_list: Vec<String> = vec![];
 
-    writeln!(f, "  // dst ports")?;
     for p in non_data_ports.keys() {
         if used_port_names.insert(p.to_string()) {
             port_list.push(format!("  .{}({})", p, p));
         }
     }
-
-    writeln!(f, "  // input ports")?;
 
     for assign in non_data_ports.values().flat_map(|m| m.values()) {
         if assign.src.borrow().is_constant() {

@@ -1,7 +1,7 @@
 use super::math_utilities::get_bit_width_from;
 use crate::traversal::{Action, Named, VisResult, Visitor};
-use calyx_ir::structure;
 use calyx_ir::{self as ir, LibrarySignatures};
+use calyx_ir::{structure, BoolAttr};
 
 use ir::{build_assignments, guard};
 /// Compiles [`ir::Invoke`](calyx_ir::Invoke) statements into an [`ir::Enable`](calyx_ir::Enable)
@@ -50,6 +50,12 @@ impl Visitor for CompileRepeat {
                 let num_repeats = constant(num_repeats, idx_size);
                 let signal_on = constant(1,1);
             );
+
+            idx.borrow_mut().add_attribute(BoolAttr::Control, 1);
+            cond_reg.borrow_mut().add_attribute(BoolAttr::Control, 1);
+            adder.borrow_mut().add_attribute(BoolAttr::Control, 1);
+            lt.borrow_mut().add_attribute(BoolAttr::Control, 1);
+
             // regs_done is `cond_reg.done & idx.done`
             let regs_done: ir::Guard<ir::Nothing> =
                 guard!(cond_reg["done"] & idx["done"]);

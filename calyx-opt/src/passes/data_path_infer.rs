@@ -104,6 +104,7 @@ impl DataPathInfer {
 }
 
 impl Visitor for DataPathInfer {
+
     fn finish_if(
         &mut self,
         s: &mut ir::If,

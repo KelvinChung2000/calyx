@@ -6,8 +6,8 @@ use super::ast::{
 };
 use super::Attributes;
 use crate::{Attribute, Direction, PortDef, Primitive, Width};
-use calyx_utils::{self, float, CalyxResult, Id, PosString};
-use calyx_utils::{FileIdx, GPosIdx, GlobalPositionTable};
+use calyx_utils::{self, float, CalyxResult, FileIdx, Id, PosString};
+use calyx_utils::{GPosIdx, GlobalPositionTable};
 use pest::pratt_parser::{Assoc, Op, PrattParser};
 use pest_consume::{match_nodes, Error, Parser};
 use std::fs;
@@ -19,7 +19,7 @@ type ParseResult<T> = Result<T, Error<Rule>>;
 type ComponentDef = ast::ComponentDef;
 
 /// Data associated with parsing the file.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct UserData {
     /// Index to the current file
     pub file: FileIdx,

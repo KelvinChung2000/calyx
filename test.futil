@@ -1,0 +1,23 @@
+component test1<"toplevel"=1> (@data in0 : 32, @clk clk : 1, @reset reset : 1, @go go : 1) -> (@done done : 1) {
+  cells {
+    test_component = test2();
+  }
+
+  wires {
+    group init_test_component {
+      test_component.in0 = in0;
+    }
+  }
+
+  control {
+    seq {
+      invoke test_component(in0 = in0)();
+    }
+  }
+}
+
+component test2 (in0 : 32, @clk clk: 1, @reset reset: 1, @go go: 1) -> (@done done: 1) {
+  cells {}
+  wires {}
+  control {}
+}

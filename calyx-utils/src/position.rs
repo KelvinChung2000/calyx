@@ -9,7 +9,7 @@ use itertools::Itertools;
 /// The index refers to the index in the [PositionTable::indices] vector.
 pub struct PosIdx(u32);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Handle to a file in a [PositionTable]
 /// The index refers to the index in the [PositionTable::files] vector.
 pub struct FileIdx(u32);
