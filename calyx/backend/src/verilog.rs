@@ -612,9 +612,7 @@ fn emit_component<F: io::Write>(
     }
 
     // Emit FSMs
-    for fsm in comp.fsms.iter() {
-        emit_fsm(fsm, comp.name, f)?;
-    }
+    emit_fsms(comp.fsms.iter().map(ir::RRC::clone).collect(), comp.name, f)?;
 
     // Flatten all the guard expressions.
     let mut pool = ir::GuardPool::new();
