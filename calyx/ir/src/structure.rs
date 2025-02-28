@@ -123,7 +123,10 @@ impl Port {
 
     /// Checks if the parent is an FSM. Assignments to these always need to be maintained.
     pub fn parent_is_fsm(&self) -> bool {
-        matches!(&self.parent, PortParent::FSM(..))
+        match &self.parent {
+            PortParent::FSM(..) => true,
+            _ => false,
+        }
     }
 
     /// Get the canonical representation for this Port.
