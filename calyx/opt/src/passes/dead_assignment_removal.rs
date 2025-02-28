@@ -130,8 +130,7 @@ impl Visitor for DeadAssignmentRemoval {
 
             gr.borrow_mut().assignments.retain(|assign| {
                 if assign.dst.borrow().parent_is_fsm() {
-                    // otherwise, assignments to FSMs would be marked as dead
-                    true
+                    return true;
                 } else {
                     let dst = assign.dst.borrow();
                     // if dst is a combinational component that is not protected,
