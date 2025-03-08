@@ -1,6 +1,4 @@
 //! Defines the default passes available to [PassManager].
-use petgraph::visit::Data;
-
 use crate::pass_manager::PassResult;
 use crate::passes::{
     AddGuard, Canonicalize, CellShare, ClkInsertion, CollapseControl, CombProp,
@@ -147,6 +145,7 @@ impl PassManager {
                 CollapseControl,
                 StaticRepeatFSMAllocation,
                 StaticFSMAllocation,
+                CompileRepeat,
                 DeadGroupRemoval,
                 MergeAssign,
                 CompileRepeat,
