@@ -847,8 +847,8 @@ impl Schedule<'_, '_> {
                 };
                 // Add group to mapping for emitting group JSON info
                 self.groups_to_states.insert(FSMStateInfo { id: cur_state, group: fsm.borrow().name() });
-    
-                let not_done = ir::Guard::True;
+
+                let not_done = !guard!(fsm["done"]);
                 let signal_on = self.builder.add_constant(1, 1);
     
                 // Activate this fsm in the current state
