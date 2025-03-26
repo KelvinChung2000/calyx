@@ -304,6 +304,19 @@ impl Component {
             }
             group_ref.borrow_mut().assignments = assigns;
         }
+        for fsm in self.fsms.iter() {
+            let mut new_assignments = vec![];
+            for state_assignments in fsm.borrow().assignments.iter() {
+                let mut assigns = state_assignments.clone();
+
+                for assign in &mut assigns {
+                    f(assign)
+                }
+
+                new_assignments.push(assigns);
+            }
+            fsm.borrow_mut().assignments = new_assignments;
+        }
         self.continuous_assignments.iter_mut().for_each(f);
     }
 
@@ -320,6 +333,13 @@ impl Component {
         for group_ref in self.comb_groups.iter() {
             for assign in &group_ref.borrow().assignments {
                 f(assign)
+            }
+        }
+        for fsm in self.fsms.iter() {
+            for state_assignments in fsm.borrow().assignments.iter() {
+                for assign in state_assignments.iter() {
+                    f(assign)
+                }
             }
         }
         self.continuous_assignments.iter().for_each(f);
