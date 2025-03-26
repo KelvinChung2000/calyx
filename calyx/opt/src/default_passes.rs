@@ -145,7 +145,6 @@ impl PassManager {
                 CollapseControl,
                 StaticRepeatFSMAllocation,
                 StaticFSMAllocation,
-                // CompileRepeat,
                 DeadGroupRemoval,
                 MergeAssign,
                 CompileRepeat,
