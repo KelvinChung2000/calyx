@@ -808,23 +808,29 @@ fn emit_fsms<F: io::Write>(
         ir::Canonical,
         Vec<(ir::Id, usize, ir::Assignment<Nothing>)>,
     > = HashMap::new();
-    for fsm in fsms.iter() {
-        for collection in fsm.borrow().merge_assignments().into_iter() {
-            for (state, assignment) in collection.into_iter() {
-                let assign_dest = assignment.dst.borrow().canonical();
-                dest2mergedassigns
-                    .entry(assign_dest)
-                    .and_modify(|merged_assigns| {
-                        merged_assigns.push((
+    fsms.iter().for_each(|fsm: &RRC<ir::FSM>| {
+        fsm.borrow().merge_assignments().into_iter().for_each(
+            |collection: Vec<(usize, ir::Assignment<Nothing>)>| {
+                collection.into_iter().for_each(|(state, assignment)| {
+                    let assign_dest = assignment.dst.borrow().canonical();
+                    dest2mergedassigns
+                        .entry(assign_dest)
+                        .and_modify(|merged_assigns| {
+                            merged_assigns.push((
+                                fsm.borrow().name(),
+                                state,
+                                assignment.clone(),
+                            ));
+                        })
+                        .or_insert(vec![(
                             fsm.borrow().name(),
                             state,
-                            assignment.clone(),
-                        ));
-                    })
-                    .or_insert(vec![(fsm.borrow().name(), state, assignment)]);
-            }
-        }
-    }
+                            assignment,
+                        )]);
+                })
+            },
+        );
+    });
 
     // dump all assignments dependent on fsm state
     for collection in dest2mergedassigns.into_values() {
@@ -875,12 +881,13 @@ fn emit_fsm_module<F: io::Write>(
     f: &mut F,
 ) -> io::Result<()> {
     let num_states = fsm.borrow().assignments.len();
-    let reg_bitwidth = bits_needed_for(num_states as u64);
+    let reg_bitwidth = get_bit_width_from(num_states as u64);
 
     // Write module header. Inputs include ports checked during transitions, and
     // outputs include one one-bit wire for every state
     writeln!(f, "\nmodule {}_{comp_name}_def (", fsm.borrow().name())?;
-    writeln!(f, "  input logic clk,\n  input logic reset,\n")?;
+    writeln!(f, "  input logic clk,")?;
+    writeln!(f, "  input logic reset,")?;
     let mut used_port_names: HashSet<ir::Canonical> = HashSet::new();
     for transition in fsm.borrow().transitions.iter() {
         if let ir::Transition::Conditional(guards) = transition {
@@ -923,25 +930,19 @@ fn emit_fsm_module<F: io::Write>(
     writeln!(f, "  logic [{}:0] state_reg;", reg_bitwidth - 1)?;
     writeln!(f, "  logic [{}:0] state_next;\n", reg_bitwidth - 1)?;
 
-    // Generate sequential block representing the FSM:
-    //   always @(posedge clk) begin
-    //     if (reset) begin
-    //       state_reg <= s0;
-    //     end
-    //     else begin
-    //       state_reg <= state_next;
-    //     end
-    //   end
-    let always_comb_header = "  always @(posedge clk) begin\n\
-        if (reset) begin\n      state_reg <= s0;\n    end\n\
-            else begin\n      state_reg <= state_next;\n\
-                end\n  end\n";
-    writeln!(f, "{}", always_comb_header)?;
+    // Generate sequential block representing the FSM
+    writeln!(f, "  always @(posedge clk) begin")?;
+    writeln!(f, "    if (reset) begin")?;
+    writeln!(f, "      state_reg <= s0;")?;
+    writeln!(f, "    end")?;
+    writeln!(f, "    else begin")?;
+    writeln!(f, "      state_reg <= state_next;")?;
+    writeln!(f, "    end")?;
+    writeln!(f, "  end\n")?;
 
     // Begin emitting the FSM's transitions and updates
-    let case_header = "  always @(*) begin\n    state_next = s0;\n\
-        case ( state_reg )";
-    writeln!(f, "{}", case_header)?;
+    writeln!(f, "  always @(*) begin")?;
+    writeln!(f, "    case ( state_reg )")?;
     // At each state, write the updates to the state and the outward-facing
     // wires to make high / low
     for (case, trans) in fsm.borrow().transitions.iter().enumerate() {
@@ -964,9 +965,9 @@ fn emit_fsm_module<F: io::Write>(
     }
 
     // Wrap up the module
-    let case_footer = "    endcase\n  end\n\
-    endmodule\n";
-    writeln!(f, "{}", case_footer)?;
+    writeln!(f, "    endcase")?;
+    writeln!(f, "  end")?;
+    writeln!(f, "endmodule\n")?;
 
     io::Result::Ok(())
 }

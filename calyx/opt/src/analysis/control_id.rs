@@ -181,6 +181,7 @@ impl ControlId {
                 Self::compute_unique_ids_static(s, cur_state, two_if_ids)
             }
             ir::Control::Empty(_) => cur_state,
+            ir::Control::FSMEnable(_) => todo!(),
         }
     }
 
