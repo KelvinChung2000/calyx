@@ -156,7 +156,7 @@ impl<T> Guard<T> {
     pub fn is_true(&self) -> bool {
         match self {
             Guard::True => true,
-            Guard::Port(p) => p.borrow().is_constant(1, 1),
+            Guard::Port(p) => p.borrow().is_constant_value(1, 1),
             _ => false,
         }
     }
@@ -214,7 +214,7 @@ impl<T> Guard<T> {
     }
 
     pub fn port(p: RRC<Port>) -> Self {
-        if p.borrow().is_constant(1, 1) {
+        if p.borrow().is_constant_value(1, 1) {
             Guard::True
         } else {
             Guard::Port(p)
