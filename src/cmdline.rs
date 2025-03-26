@@ -73,6 +73,11 @@ pub struct Opts {
     #[argh(switch, long = "emit-primitive-extmodules")]
     pub emit_primitive_extmodules: bool,
 
+    /// emit FSM in one-hot encoding
+    /// (only relevant to the Verilog backend)
+    #[argh(switch, long = "onehot")]
+    pub onehot: bool,
+
     /// select a backend
     #[argh(option, short = 'b', default = "BackendOpt::default()")]
     pub backend: BackendOpt,
