@@ -284,6 +284,7 @@ impl PassManager {
                     let start = Instant::now();
                     pass(ctx)?;
                     if dump_ir {
+                        println!("Current pass: {name}");
                         ir::Printer::write_context(
                             ctx,
                             true,
