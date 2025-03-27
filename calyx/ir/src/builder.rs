@@ -60,17 +60,46 @@ impl<'a> Builder<'a> {
         self.component.continuous_assignments.extend(assigns);
     }
 
-<<<<<<< HEAD
-    /// Construct a new FSM and add it to the Component.
-    /// The FSM is guaranteed to start with `prefix`.
-    /// Returns a reference to the group.
-=======
     /// Construct a non-conflicting name for the FSM construct
     pub fn generate_fsm_name(&mut self) -> ir::Id {
         self.component.generate_name("fsm")
     }
 
->>>>>>> 4430a6a2 (working through fsm construct changes; leaving off at promotion-analysis)
+    pub fn add_fsm<S>(&mut self, prefix: S) -> RRC<ir::FSM>
+    where
+        S: Into<ir::Id>,
+    {
+        let prefix: ir::Id = prefix.into();
+        assert!(
+            prefix != "",
+            "Cannot construct group with empty name prefix"
+        );
+        let name = self.component.generate_name(prefix);
+
+        // Construct a new FSM
+        let fsm = ir::rrc(ir::FSM::new(name));
+
+        // Fill in the ports of the FSM with default wires
+        for (name, width) in &[("start", 1), ("done", 1), ("state", 1)] {
+            let hole = ir::rrc(ir::Port {
+                name: ir::Id::from(*name),
+                width: *width,
+                direction: ir::Direction::Inout,
+                parent: ir::PortParent::FSM(WRC::from(&fsm)),
+                attributes: ir::Attributes::default(),
+            });
+            fsm.borrow_mut().wires.push(hole);
+        }
+
+        // Add the group to the component.
+        self.component.get_fsms_mut().add(Rc::clone(&fsm));
+
+        fsm
+    }
+
+    /// Construct a new FSM and add it to the Component.
+    /// The FSM is guaranteed to start with `prefix`.
+    /// Returns a reference to the group.
     pub fn add_fsm<S>(&mut self, prefix: S) -> RRC<ir::FSM>
     where
         S: Into<ir::Id>,
