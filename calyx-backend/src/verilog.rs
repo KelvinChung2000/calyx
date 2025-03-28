@@ -123,8 +123,6 @@ impl Backend for VerilogBackend {
             }
         }
 
-        print!("Cells: {:?}", cells);
-
         let fw = &mut file.get_write();
         for extern_path in &ctx.lib.extern_paths() {
             // The extern file is guaranteed to exist by the frontend.
@@ -520,6 +518,12 @@ fn emit_fsm<F: io::Write>(
     comp_name: ir::Id,
     f: &mut F,
 ) -> io::Result<()> {
+
+    for i in 0..fsm.borrow().assignments.len() {
+        let port_name = format!("fsm_s{i}_out");
+        writeln!(f, "logic {};", port_name)?;
+    }
+
     // Instantiate an FSM module from the definition above
     let fsm_name = fsm.borrow().name();
     writeln!(f, "{fsm_name}_{comp_name}_def {fsm_name} (")?;
@@ -588,6 +592,13 @@ fn emit_fsm<F: io::Write>(
                     }
                 }
             }
+        }
+    }
+
+    for i in 0..fsm.borrow().assignments.len() {
+        let port_name = format!("fsm_s{i}_out");
+        if used_port_names.insert(port_name.clone()) {
+            port_list.push(format!("  .{}({})", port_name, port_name));
         }
     }
 
@@ -747,6 +758,13 @@ fn emit_fsm_module<F: io::Write>(
         }
     }
 
+    for i in 0..fsm.borrow().assignments.len() {
+        let port_name = format!("fsm_s{i}_out");
+        if used_port_names.insert(port_name.clone()) {
+            port_list.push(format!("  output logic {}", port_name));
+        }
+    }
+
     writeln!(f, "{}", port_list.join(",\n"))?;
     writeln!(f, ");\n")?;
 
@@ -815,6 +833,14 @@ fn emit_fsm_module<F: io::Write>(
                 )?;
             } else {
                 writeln!(f, "          {} = 'b0;", k)?;
+            }
+        }
+        for i in 0..fsm.borrow().transitions.len(){
+            let port_name = format!("fsm_s{i}_out");
+            if i == case {
+                writeln!(f, "          {} = 1'b1;", port_name)?;
+            } else {
+                writeln!(f, "          {} = 1'b0;", port_name)?;
             }
         }
 
