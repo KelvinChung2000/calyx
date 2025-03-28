@@ -67,18 +67,32 @@ impl Visitor for DefaultAssigns {
         }
 
         // We only need to consider write set of the continuous assignments
-        // and the register that controls an FSM
-        let writes = comp
+        let mut writes = comp
             .continuous_assignments
             .iter()
             .analysis()
             .writes()
             .group_by_cell();
 
+        comp.fsms.iter().for_each(|fsm| {
+            fsm.borrow().assignments.iter().for_each(|assigns| {
+                writes
+                    .extend(assigns.iter().analysis().writes().group_by_cell());
+            })
+        });
+
         let mut assigns = Vec::new();
 
         let mt = vec![];
         let cells = comp.cells.iter().cloned().collect_vec();
+        let ports = comp.signature.borrow().ports().iter().cloned().collect_vec();
+        let mut con_assigns = comp.continuous_assignments.iter().cloned().collect_vec();
+        comp.fsms.iter().for_each(|fsm| {
+            fsm.borrow().assignments.iter().for_each(|assigns| {
+                con_assigns
+                    .extend(assigns.iter().cloned().collect_vec());
+            })
+        });
         let mut builder = ir::Builder::new(comp, sigs);
 
         for cr in &cells {
@@ -113,7 +127,7 @@ impl Visitor for DefaultAssigns {
                 .collect_vec();
 
             assigns.extend(
-                required.iter().filter(|p| (!cell_writes.contains(p))).map(
+                required.iter().filter(|p| !cell_writes.contains(p)).map(
                     |name| {
                         let port = cell.get(name);
                         let zero = builder.add_constant(0, port.borrow().width);
@@ -131,6 +145,31 @@ impl Visitor for DefaultAssigns {
                     },
                 ),
             );
+        }
+
+        for port in &ports {
+            if port.borrow().direction == ir::Direction::Output {
+                continue;
+            }
+            let port_name = port.borrow().name.clone();
+            // Check if any existing assignment writes to this port
+            if !con_assigns.iter().any(|assign| {
+                assign.dst.borrow().name == port_name
+            }) {
+                println!("Adding default assignment for port {}", port.borrow());
+                let zero = builder.add_constant(0, port.borrow().width);
+                let assign: ir::Assignment<ir::Nothing> = builder
+                    .build_assignment(
+                        port.clone(),
+                        zero.borrow().get("out"),
+                        ir::Guard::True,
+                    );
+                log::info!(
+                    "Adding default assignment for port {}",
+                    port_name
+                );
+                assigns.push(assign);
+            }
         }
 
         comp.continuous_assignments.extend(assigns);
