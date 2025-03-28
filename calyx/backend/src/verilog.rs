@@ -1001,6 +1001,13 @@ fn emit_fsm_module<F: io::Write>(
         }
     }
 
+    for i in 0..fsm.borrow().assignments.len() {
+        let port_name = format!("fsm_s{i}_out");
+        if used_port_names.insert(port_name.clone()) {
+            port_list.push(format!("  output logic {}", port_name));
+        }
+    }
+
     writeln!(f, "{}", port_list.join(",\n"))?;
     writeln!(f, ");\n")?;
 
@@ -1069,6 +1076,14 @@ fn emit_fsm_module<F: io::Write>(
                 )?;
             } else {
                 writeln!(f, "          {} = 'b0;", k)?;
+            }
+        }
+        for i in 0..fsm.borrow().transitions.len(){
+            let port_name = format!("fsm_s{i}_out");
+            if i == case {
+                writeln!(f, "          {} = 1'b1;", port_name)?;
+            } else {
+                writeln!(f, "          {} = 1'b0;", port_name)?;
             }
         }
 
