@@ -2,7 +2,7 @@ use super::Attribute;
 use crate::InlineAttributes;
 use calyx_utils::{CalyxResult, GPosIdx, WithPos};
 use linked_hash_map::LinkedHashMap;
-use std::convert::TryFrom;
+use std::{convert::TryFrom, fmt};
 
 #[derive(Debug, Clone, Default)]
 /// Attribute information stored on the Heap
@@ -52,6 +52,25 @@ pub trait GetAttributes {
 
     /// Returns a mutable [`Attributes`] instance
     fn get_mut_attributes(&mut self) -> &mut Attributes;
+}
+
+impl fmt::Display for Attributes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return write!(f, "");
+        }
+
+        let mut attrs = self
+            .hinfo
+            .attrs
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>();
+
+        attrs.extend(self.inl.iter().map(|k| format!("{}=1", k.as_ref())));
+
+        write!(f, "{}", attrs.join(", "))
+    }
 }
 
 impl Attributes {
