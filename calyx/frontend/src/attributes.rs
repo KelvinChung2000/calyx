@@ -92,6 +92,25 @@ pub trait GetAttributes {
     fn get_mut_attributes(&mut self) -> &mut Attributes;
 }
 
+impl fmt::Display for Attributes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return write!(f, "");
+        }
+
+        let mut attrs = self
+            .hinfo
+            .attrs
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>();
+
+        attrs.extend(self.inl.iter().map(|k| format!("{}=1", k.as_ref())));
+
+        write!(f, "{}", attrs.join(", "))
+    }
+}
+
 impl Attributes {
     /// Add a new attribute
     pub fn insert<A>(&mut self, key: A, val: u64)
