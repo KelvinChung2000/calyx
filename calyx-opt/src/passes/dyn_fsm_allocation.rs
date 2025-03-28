@@ -57,7 +57,8 @@ fn control_exits(con: &ir::Control, exits: &mut Vec<PredEdge>) {
         ir::Control::Empty(_) => {},
         ir::Control::Enable(ir::Enable { group, attributes }) => {
             let cur_state = attributes.get(NODE_ID).unwrap();
-            exits.push((cur_state, guard!(group["done"])))
+            // exits.push((cur_state, guard!(group["done"])))
+            exits.push((cur_state, *group.borrow().done_cond().guard.clone()));
         },
         ir::Control::FSMEnable(ir::FSMEnable{attributes, fsm}) => {
             let cur_state = attributes.get(NODE_ID).unwrap();
@@ -640,8 +641,7 @@ impl Schedule<'_, '_> {
                 .into_iter()
                 .map(|(st, guard)| (st, cur_state, guard));
             self.transitions.extend(transitions);
-
-            let done_cond = ir::Guard::Port(group.borrow().done_cond().src.clone());
+            let done_cond = *group.borrow().done_cond().guard.clone();
             Ok(vec![(cur_state, done_cond)])
         }
         ir::Control::Seq(seq) => {
@@ -840,7 +840,7 @@ impl Schedule<'_, '_> {
         //   - Before the body when the condition is false
         //   - Inside the body when the condition is false
         let not_port_guard = !port_guard;
-        let all_prevs = preds
+        let all_prevs: Vec<PredEdge> = preds
             .into_iter()
             .chain(prevs)
             .map(|(st, guard)| (st, guard & not_port_guard.clone()))
