@@ -14,6 +14,7 @@ use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -26,6 +27,26 @@ pub enum PortParent {
     FSM(WRC<FSM>),
     FSM(WRC<FSM>),
 }
+
+impl fmt::Display for PortParent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PortParent::Cell(cell) => {
+                write!(f, "{}", cell.upgrade().borrow().name)
+            }
+            PortParent::Group(group) => {
+                write!(f, "{}", group.upgrade().borrow().name)
+            }
+            PortParent::StaticGroup(group) => {
+                write!(f, "{}", group.upgrade().borrow().name)
+            }
+            PortParent::FSM(fsm) => {
+                write!(f, "{}", fsm.upgrade().borrow().name)
+            }
+        }
+    }
+}
+
 
 /// Represents a port on a cell.
 #[derive(Debug, Clone)]
@@ -41,6 +62,16 @@ pub struct Port {
     pub parent: PortParent,
     /// Attributes associated with this port.
     pub attributes: Attributes,
+}
+
+impl fmt::Display for Port {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Port(({}) {}.{}[{}] :({}))",
+            self.direction, self.parent, self.name, self.width, self.attributes
+        )
+    }
 }
 
 /// Canonical name of a Port
@@ -538,6 +569,33 @@ pub struct Assignment<T> {
     pub attributes: Attributes,
 }
 
+impl fmt::Display for Assignment<Nothing> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let dst = self.dst.borrow();
+        let src = self.src.borrow();
+        if self.guard.is_true() {
+            write!(
+                f,
+                "{}.{} = {}.{}",
+                dst.get_parent_name(),
+                dst.name,
+                src.get_parent_name(),
+                src.name,
+            )
+        } else {
+            write!(
+                f,
+                "{}.{} = {} ? {}.{}",
+                dst.get_parent_name(),
+                dst.name,
+                self.guard,
+                src.get_parent_name(),
+                src.name,
+            )
+        }
+    }
+}
+
 impl<T> Assignment<T> {
     /// Build a new unguarded assignment
     pub fn new(dst: RRC<Port>, src: RRC<Port>) -> Self {
@@ -640,6 +698,24 @@ pub enum Transition {
 impl Transition {
     pub fn new_uncond(s: u64) -> Self {
         Self::Unconditional(s)
+    }
+}
+
+impl fmt::Display for Transition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Transition::Unconditional(s) => write!(f, "-> {}", s),
+            Transition::Conditional(conds) => {
+                write!(
+                    f,
+                    "{}",
+                    conds
+                        .iter()
+                        .map(|(g, s)| format!("{} -> {}", g, s))
+                        .join(", ")
+                )
+            }
+        }
     }
 }
 
