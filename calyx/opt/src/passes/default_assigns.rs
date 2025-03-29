@@ -76,9 +76,15 @@ impl Visitor for DefaultAssigns {
 
         comp.fsms.iter().for_each(|fsm| {
             fsm.borrow().assignments.iter().for_each(|assigns| {
-                writes
-                    .extend(assigns.iter().analysis().writes().group_by_cell());
-            })
+                for (k, v) in assigns.iter().analysis().writes().group_by_cell().iter(){
+                    for i in v.iter(){
+                        if writes.entry(*k).or_default().contains(i){
+                            continue;
+                        }
+                        writes.entry(*k).or_default().push(i.clone());
+                    }
+                }
+            });
         });
 
         let mut assigns = Vec::new();
@@ -93,6 +99,7 @@ impl Visitor for DefaultAssigns {
                     .extend(assigns.iter().cloned().collect_vec());
             })
         });
+
         let mut builder = ir::Builder::new(comp, sigs);
 
         for cr in &cells {
@@ -138,7 +145,7 @@ impl Visitor for DefaultAssigns {
                                 ir::Guard::True,
                             );
                         log::info!(
-                            "Adding {}",
+                            "Adding default assignment for {}",
                             ir::Printer::assignment_to_str(&assign)
                         );
                         assign
@@ -156,7 +163,6 @@ impl Visitor for DefaultAssigns {
             if !con_assigns.iter().any(|assign| {
                 assign.dst.borrow().name == port_name
             }) {
-                println!("Adding default assignment for port {}", port.borrow());
                 let zero = builder.add_constant(0, port.borrow().width);
                 let assign: ir::Assignment<ir::Nothing> = builder
                     .build_assignment(
