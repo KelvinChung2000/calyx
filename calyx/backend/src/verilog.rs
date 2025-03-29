@@ -5,7 +5,7 @@
 
 use crate::traits::Backend;
 use calyx_ir::{
-    self as ir, Assignment, Control, FlatGuard, Group, Guard, GuardRef, RRC,
+    self as ir, Assignment, Control, FlatGuard, Group, Guard, GuardRef, Width, RRC
 };
 use calyx_opt::passes::math_utilities::get_bit_width_from;
 use calyx_utils::{CalyxResult, Error, OutputFile};
@@ -489,27 +489,12 @@ fn emit_prim_inline<F: io::Write>(
     writeln!(f, " (")?;
     for (idx, port) in prim.signature.iter().enumerate() {
         // NOTE: The signature port definitions are reversed inside the component.
-
-        let attr_str = format!(
-            "(* {} *)",
-            port.attributes
-                .to_string_with(", ", |k, v| format!("{}={}", k, v))
-        );
-
         match port.direction {
             ir::Direction::Input => {
-                if port.attributes.is_empty() {
-                    write!(f, "   input wire")?;
-                } else {
-                    write!(f, "   {} input wire", attr_str)?;
-                }
+                write!(f, "   input wire")?;
             }
             ir::Direction::Output => {
-                if port.attributes.is_empty() {
-                    write!(f, "   output wire")?;
-                } else {
-                    write!(f, "   {} output wire", attr_str)?;
-                }
+                write!(f, "   output")?;
             }
             ir::Direction::Inout => {
                 panic!("Unexpected Inout port on Component: {}", port.name())
@@ -830,8 +815,6 @@ fn init_fsm<F: io::Write>(
         writeln!(f, "logic {state_wire};")?;
     }
 
-    // Instantiate an FSM module from the definition above
-    let fsm_name = fsm.borrow().name();
     writeln!(f, "{fsm_name}_{comp_name}_def {fsm_name} (")?;
     for (case, st_wire) in fsm_state_wires.into_iter().enumerate() {
         writeln!(f, "  .s{case}_out({st_wire}),")?;
@@ -941,7 +924,7 @@ fn emit_fsm_module<F: io::Write>(
     writeln!(f, "  input logic reset,")?;
 
     let mut non_data_ports: BTreeMap<
-        String,
+        (String, u64),
         BTreeMap<usize, Assignment<Nothing>>,
     > = BTreeMap::new();
     for assigns in fsm.borrow().merge_assignments().iter() {
@@ -952,22 +935,22 @@ fn emit_fsm_module<F: io::Write>(
 
         let port_name = VerilogPortRef(&dst).to_string();
         assert_ne!(
-            non_data_ports.contains_key(&port_name),
+            non_data_ports.contains_key(&(port_name.clone(), dst.borrow().width)),
             true,
             "repeated port name"
         );
         let assigns_at_time: BTreeMap<usize, Assignment<Nothing>> =
             BTreeMap::from_iter(assigns.iter().cloned());
 
-        non_data_ports.insert(port_name, assigns_at_time);
+        non_data_ports.insert((port_name.clone(), dst.borrow().width), assigns_at_time);
     }
 
     let mut used_port_names: HashSet<String> = HashSet::new();
     let mut port_list: Vec<String> = vec![];
 
     for p in non_data_ports.keys() {
-        if used_port_names.insert(p.to_string()) {
-            port_list.push(format!("  output logic {}", p));
+        if used_port_names.insert(p.0.to_string()) {
+            port_list.push(format!("  output logic [{}:0] {}", p.1-1, p.0));
         }
     }
 
@@ -977,9 +960,10 @@ fn emit_fsm_module<F: io::Write>(
         }
         if used_port_names.insert(assign.src.borrow().canonical().to_string()) {
             port_list
-                .push(format!("  input logic {}", VerilogPortRef(&assign.src)));
+                .push(format!("  input logic [{}:0] {}", assign.src.borrow().width-1,  VerilogPortRef(&assign.src)));
         }
     }
+
 
     for transition in fsm.borrow().transitions.iter() {
         if let ir::Transition::Conditional(guards) = transition {
@@ -1002,7 +986,7 @@ fn emit_fsm_module<F: io::Write>(
     }
 
     for i in 0..fsm.borrow().assignments.len() {
-        let port_name = format!("fsm_s{i}_out");
+        let port_name = format!("{}_s{i}_out", fsm.borrow().name());
         if used_port_names.insert(port_name.clone()) {
             port_list.push(format!("  output logic {}", port_name));
         }
@@ -1071,15 +1055,15 @@ fn emit_fsm_module<F: io::Write>(
                 writeln!(
                     f,
                     "          {} = {};",
-                    k,
+                    k.0,
                     VerilogPortRef(&assign.src)
                 )?;
             } else {
-                writeln!(f, "          {} = 'b0;", k)?;
+                writeln!(f, "          {} = 'b0;", k.0)?;
             }
         }
         for i in 0..fsm.borrow().transitions.len(){
-            let port_name = format!("fsm_s{i}_out");
+            let port_name = format!("{}_s{i}_out", fsm.borrow().name());
             if i == case {
                 writeln!(f, "          {} = 1'b1;", port_name)?;
             } else {
@@ -1096,7 +1080,7 @@ fn emit_fsm_module<F: io::Write>(
     writeln!(f, "      default begin")?;
 
     for k in non_data_ports.keys() {
-        writeln!(f, "          {} = 'b0;", k)?;
+        writeln!(f, "          {} = 'b0;", k.0)?;
     }
 
     writeln!(f, "          next_state = S0;")?;
@@ -1195,26 +1179,6 @@ fn is_data_port(pr: &RRC<ir::Port>) -> bool {
         // For cell.is_this() ports that were externalized, we already checked
         // that the parent cell had the `@data` attribute.
         if cell.attributes.has(ir::BoolAttr::Data) || cell.is_this() {
-            return true;
-        }
-    }
-    false
-}
-
-/// Checks if:
-/// 1. The port is marked with `@control`
-/// 2. The port's cell parent is marked with `@control`
-fn is_control_port(pr: &RRC<ir::Port>) -> bool {
-    assert_eq!(ir::Direction::Input, pr.borrow().direction);
-    let port = pr.borrow();
-    if !port.attributes.has(ir::BoolAttr::Control) {
-        return false;
-    }
-    if let ir::PortParent::Cell(cwr) = &port.parent {
-        let cr = cwr.upgrade();
-        let cell = cr.borrow();
-        // that the parent cell had the `@control` attribute.
-        if cell.attributes.has(ir::BoolAttr::Control) {
             return true;
         }
     }
