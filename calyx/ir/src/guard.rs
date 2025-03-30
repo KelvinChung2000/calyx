@@ -126,6 +126,12 @@ impl StaticTiming {
     }
 }
 
+impl AsRef<StaticTiming> for StaticTiming {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl<T> Hash for Guard<T>
 where
     T: ToString,
@@ -215,6 +221,141 @@ impl<T> Guard<T> {
         }
         false
     }
+
+    /// Try to simplify the guard by evaluating simple logical operations.
+    /// This function will eliminate redundancies and simplify logical expressions
+    pub fn simplify(&self) -> Self
+    where
+        T: Clone + Eq,
+    {
+        match self {
+            Guard::True => Guard::True,
+            Guard::Port(p) => {
+                if p.borrow().is_constant_value(1, 1) {
+                    Guard::True
+                } else if p.borrow().is_constant_value(0, 1) {
+                    Guard::Not(Box::new(Guard::True))
+                } else {
+                    Guard::Port(p.clone())
+                }
+            }
+            Guard::CompOp(op, l, r) => {
+                // If comparing identical ports, we can simplify
+                if l.borrow().name == r.borrow().name && 
+                   l.borrow().get_parent_name() == r.borrow().get_parent_name() {
+                    match op {
+                        PortComp::Eq | PortComp::Geq | PortComp::Leq => Guard::True,
+                        PortComp::Neq | PortComp::Gt | PortComp::Lt => Guard::Not(Box::new(Guard::True)),
+                    }
+                } else {
+                    Guard::CompOp(op.clone(), Rc::clone(l), Rc::clone(r))
+                }
+            }
+            Guard::And(l, r) => {
+                let l_simplified = l.simplify();
+                let r_simplified = r.simplify();
+                
+                if l_simplified.is_true() {
+                    r_simplified
+                } else if r_simplified.is_true() {
+                    l_simplified
+                } else if l_simplified.is_false() || r_simplified.is_false() {
+                    Guard::Not(Box::new(Guard::True))
+                } else if l_simplified == r_simplified {
+                    l_simplified
+                } else {
+                    Guard::And(Box::new(l_simplified), Box::new(r_simplified))
+                }
+            }
+            Guard::Or(l, r) => {
+                let l_simplified = l.simplify();
+                let r_simplified = r.simplify();
+                
+                if l_simplified.is_true() || r_simplified.is_true() {
+                    Guard::True
+                } else if l_simplified.is_false() {
+                    r_simplified
+                } else if r_simplified.is_false() {
+                    l_simplified
+                } else if l_simplified == r_simplified {
+                    l_simplified
+                } else {
+                    Guard::Or(Box::new(l_simplified), Box::new(r_simplified))
+                }
+            }
+            Guard::Not(g) => {
+                let g_simplified = g.simplify();
+                if g_simplified.is_true() {
+                    Guard::Not(Box::new(Guard::True))
+                } else if g_simplified.is_false() {
+                    Guard::True
+                } else {
+                    match g_simplified {
+                        Guard::Not(inner) => *inner,
+                        Guard::CompOp(op, l, r) => {
+                            let negated_op = match op {
+                                PortComp::Eq => PortComp::Neq,
+                                PortComp::Neq => PortComp::Eq,
+                                PortComp::Gt => PortComp::Leq,
+                                PortComp::Lt => PortComp::Geq,
+                                PortComp::Geq => PortComp::Lt,
+                                PortComp::Leq => PortComp::Gt,
+                            };
+                            Guard::CompOp(negated_op, l, r)
+                        },
+                        _ => Guard::Not(Box::new(g_simplified)),
+                    }
+                }
+            }
+            Guard::Info(info) => Guard::Info(info.clone()),
+        }
+    }
+
+    pub fn get_timing_interval(&self) -> Option<(u64, u64)>
+    where
+        T: AsRef<StaticTiming>,
+    {
+        match self {
+            Guard::Info(static_timing) => Some(static_timing.as_ref().get_interval()),
+            Guard::And(l, r ) => {
+                let l_interval = l.get_timing_interval();
+                let r_interval = r.get_timing_interval();
+
+                // If neither side has timing information, return None
+                if l_interval.is_none() && r_interval.is_none() {
+                    return None;
+                }
+
+                // When both sides have timing information, take the intersection
+                if let (Some(l_int), Some(r_int)) = (l_interval, r_interval) {
+                    return Some((l_int.0.max(r_int.0), l_int.1.min(r_int.1)));
+                }
+
+                // Otherwise use whichever interval is available
+                return l_interval.or(r_interval);
+            }
+            Guard::Or(l, r) => {
+                let l_interval = l.get_timing_interval();
+                let r_interval = r.get_timing_interval();
+
+                // If neither side has timing information, return None
+                if l_interval.is_none() && r_interval.is_none() {
+                    return None;
+                }
+
+                // When both sides have timing information, take the union
+                if let (Some(l_int), Some(r_int)) = (l_interval, r_interval) {
+                    return Some((l_int.0.min(r_int.0), l_int.1.max(r_int.1)));
+                }
+
+                // Otherwise use whichever interval is available
+                return l_interval.or(r_interval);
+            }
+            Guard::Not(g) => g.get_timing_interval(),
+            _ => None,
+        }
+    }
+
 
     /// Update the guard in place. Replaces this guard with `upd(self)`.
     /// Uses `std::mem::take` for the in-place update.
@@ -547,6 +688,33 @@ impl Guard<StaticTiming> {
             }
             Self::CompOp(..) | Self::Port(_) => {
                 HashSet::from_iter(0..group_latency)
+            }
+        }
+    }
+
+    pub fn replace_static_timing_at_time(&mut self, time: u64) -> Self {
+        match self {
+            Self::True | Self::CompOp(..) | Self::Port(..) => self.clone(),
+            Self::Not(g) => {
+                g.replace_static_timing_at_time(time)
+            }
+            Self::And(l, r) => {
+                let left = l.replace_static_timing_at_time(time);
+                let right = r.replace_static_timing_at_time(time);                
+                Self::And(Box::new(left), Box::new(right))
+            }
+            Self::Or(l, r) => {
+                let left = l.replace_static_timing_at_time(time);
+                let right = r.replace_static_timing_at_time(time);
+                Self::Or(Box::new(left), Box::new(right))
+            }
+            Self::Info(static_timing) => {
+                let (b, e) = static_timing.get_interval();
+                if b <= time && time <= e  {
+                    Self::True
+                }else{
+                    self.clone()
+                }
             }
         }
     }
