@@ -1082,6 +1082,10 @@ fn emit_fsm_module<F: io::Write>(
     for k in non_data_ports.keys() {
         writeln!(f, "          {} = 'b0;", k.0)?;
     }
+    for i in 0..fsm.borrow().transitions.len(){
+        let port_name = format!("{}_s{i}_out", fsm.borrow().name());
+        writeln!(f, "          {} = 1'b0;", port_name)?;
+    }
 
     writeln!(f, "          next_state = S0;")?;
     writeln!(f, "      end")?;
