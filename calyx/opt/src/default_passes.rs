@@ -128,27 +128,28 @@ impl PassManager {
             "fsm-opt",
             [
                 DataPathInfer,
-                CollapseControl,
+                CollapseControl, // Run it twice: once at beginning of pre-opt, once at end.
                 CompileSyncWithoutSyncReg,
                 GroupToSeq,
                 DeadAssignmentRemoval,
-                GroupToInvoke,
+                GroupToInvoke, // Creates Dead Groups potentially
                 ComponentInliner,
                 CombProp,
-                DeadCellRemoval,
-                CellShare,
-                SimplifyWithControl,
-                CompileInvoke,
+                DeadCellRemoval, // Clean up dead wires left by CombProp
+                SimplifyWithControl, // Must run before compile-invoke
+                CompileInvoke,   // creates dead comb groups
                 StaticInference,
                 StaticPromotion,
-                DeadGroupRemoval,
-                CollapseControl,
-                StaticRepeatFSMAllocation,
-                StaticFSMAllocation,
-                DeadGroupRemoval,
-                MergeAssign,
                 CompileRepeat,
-                TopDownCompileControl,
+                DeadGroupRemoval, // Since previous passes potentially create dead groups
+                CollapseControl,
+                StaticInliner,
+                DeadGroupRemoval, // Static inliner generates lots of dead groups
+                AddGuard,
+                SimplifyStaticGuards,
+                DeadGroupRemoval,
+                DynamicFSMAllocation,
+                DeadGroupRemoval,
             ]
         );
 
