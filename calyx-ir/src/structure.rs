@@ -564,7 +564,7 @@ pub struct Assignment<T> {
     pub attributes: Attributes,
 }
 
-impl fmt::Display for Assignment<Nothing> {
+impl<T: fmt::Display> fmt::Display for Assignment<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let dst = self.dst.borrow();
         let src = self.src.borrow();
