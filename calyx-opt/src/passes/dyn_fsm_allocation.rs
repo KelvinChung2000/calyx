@@ -637,8 +637,9 @@ impl Schedule<'_, '_> {
                 .into_iter()
                 .map(|(st, guard)| (st, cur_state, guard));
             self.transitions.extend(transitions);
-            let done_cond = *group.borrow().done_cond().guard.clone();
-            Ok(vec![(cur_state, done_cond)])
+            let done_cond = group.borrow().done_cond().clone();
+            let done_cond_guard = ir::Guard::And(done_cond.guard, Box::new(ir::Guard::Port(done_cond.src))).simplify();
+            Ok(vec![(cur_state, done_cond_guard)])
         }
         ir::Control::Seq(seq) => {
             self.calc_seq_recur(seq, preds, early_transitions)
