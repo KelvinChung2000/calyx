@@ -11,7 +11,7 @@ use calyx_opt::passes::math_utilities::get_bit_width_from;
 use calyx_utils::{CalyxResult, Error, OutputFile};
 use ir::Nothing;
 use itertools::Itertools;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::rc::Rc;
 use std::{fs::File, time::Instant};
@@ -340,34 +340,33 @@ fn emit_component<F: io::Write>(
             writeln!(f, "{}\n{}\n", attr_str, inst)?;
         }
     }
-
-    // gather assignments keyed by destination
-    let mut map: HashMap<_, (RRC<ir::Port>, Vec<_>)> = HashMap::new();
-    for asgn in &comp.continuous_assignments {
-        map.entry(asgn.dst.borrow().canonical())
-            .and_modify(|(_, v)| v.push(asgn))
-            .or_insert((Rc::clone(&asgn.dst), vec![asgn]));
-    }
-
     // Emit FSMs
     for fsm in comp.fsms.iter() {
         emit_fsm(fsm, comp.name, f)?;
     }
 
+    // gather assignments keyed by destination
+    let mut map: BTreeMap<_, (RRC<ir::Port>, Vec<_>)> = BTreeMap::new();
+    for asgn in &comp.continuous_assignments {
+        map.entry(asgn.dst.borrow().canonical())
+        .and_modify(|(_, v)| v.push(asgn))
+        .or_insert((Rc::clone(&asgn.dst), vec![asgn]));
+    }
+
     // Flatten all the guard expressions.
     let mut pool = ir::GuardPool::new();
     let grouped_asgns: Vec<_> = map
-        .values()
-        .sorted_by_key(|(port, _)| port.borrow().canonical())
-        .map(|(dst, asgns)| {
-            let flat_asgns: Vec<_> = asgns
-                .iter()
-                .map(|asgn| {
-                    let guard = pool.flatten(&asgn.guard);
-                    (asgn.src.clone(), guard)
-                })
-                .collect();
-            (dst, flat_asgns)
+    .values()
+    .sorted_by_key(|(port, _)| port.borrow().canonical())
+    .map(|(dst, asgns)| {
+        let flat_asgns: Vec<_> = asgns
+        .iter()
+        .map(|asgn| {
+                        let guard = pool.flatten(&asgn.guard);
+                        (asgn.src.clone(), guard)
+                    })
+                    .collect();
+                (dst, flat_asgns)
         })
         .collect();
 
@@ -593,34 +592,13 @@ fn emit_fsm_module<F: io::Write>(
     writeln!(f, "  input logic clk,")?;
     writeln!(f, "  input logic reset,")?;
 
-    let mut non_data_ports: BTreeMap<
-    (String, u64),
-    BTreeMap<usize, Assignment<Nothing>>,
-    > = BTreeMap::new();
-    for assigns in fsm.borrow().merge_assignments().iter() {
-        let dst = &assigns[0].1.dst;
-        if is_data_port(dst) {
-            continue;
-        }
-        
-        let port_name = VerilogPortRef(&dst).to_string();
-        assert_ne!(
-            non_data_ports.contains_key(&(port_name.clone(), dst.borrow().width)),
-            true,
-            "repeated port name"
-        );
-        let assigns_at_time: BTreeMap<usize, Assignment<Nothing>> =
-        BTreeMap::from_iter(assigns.iter().cloned());
-        
-        non_data_ports.insert((port_name.clone(), dst.borrow().width), assigns_at_time);
-    }
     
-    let mut unique_go_ports: BTreeMap<String, HashMap<usize, Assignment<Nothing>>> = BTreeMap::new();
+    let mut unique_go_ports: BTreeMap<String, BTreeMap<usize, Assignment<Nothing>>> = BTreeMap::new();
     for assigns in fsm.borrow().merge_assignments().iter() {
         let dst = &assigns[0].1.dst;
         if is_go_port(dst) || is_done_port(dst) {
-            let assigns_at_time: HashMap<usize, Assignment<Nothing>> =
-                HashMap::from_iter(assigns.iter().cloned());
+            let assigns_at_time: BTreeMap<usize, Assignment<Nothing>> =
+                BTreeMap::from_iter(assigns.iter().cloned());
             unique_go_ports.insert(VerilogPortRef(dst).to_string(), assigns_at_time);
         }
     }
@@ -796,7 +774,7 @@ fn emit_fsm_module<F: io::Write>(
                 case_guard
             } else {
                 format!(
-                    "({case_guard} & ({}))",
+                    "(({case_guard}) & ({}))",
                     unflattened_guard(&assign.guard)
                 )
             };
@@ -807,7 +785,7 @@ fn emit_fsm_module<F: io::Write>(
                 VerilogPortRef(&assign.src)
             )?;
         }
-        writeln!(f, "       'dx;")?;
+        writeln!(f, "       {}'dx;", dst_ref.borrow().width)?;
     }
 
     writeln!(f, "endmodule\n")?;
@@ -1028,6 +1006,7 @@ fn emit_assignment_flat<F: io::Write>(
     // Simple optimizations for 1-guard cases.
     if assignments.len() == 1 {
         let (src, guard) = &assignments[0];
+        // println!("TEST {} {data}", src.borrow());
         if data {
             // For data ports (for whom unassigned values are undefined), we can drop the guard
             // entirely and assume it is always true (because it would be UB if it were ever false).
@@ -1219,8 +1198,8 @@ fn emit_guard<F: std::io::Write>(
 ) -> io::Result<()> {
     let gr = VerilogGuardRef;
     match guard {
-        FlatGuard::Or(l, r) => write!(f, "{} | {}", gr(*l), gr(*r)),
-        FlatGuard::And(l, r) => write!(f, "{} & {}", gr(*l), gr(*r)),
+        FlatGuard::Or(l, r) => write!(f, "({} | {})", gr(*l), gr(*r)),
+        FlatGuard::And(l, r) => write!(f, "({} & {})", gr(*l), gr(*r)),
         FlatGuard::CompOp(op, l, r) => {
             let op = match op {
                 ir::PortComp::Eq => "==",
