@@ -11,7 +11,7 @@ use calyx_utils::{CalyxResult, Error, GetName};
 use itertools::Itertools;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::{self};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -28,16 +28,16 @@ impl fmt::Display for PortParent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PortParent::Cell(cell) => {
-                write!(f, "{}", cell.upgrade().borrow().name)
+                write!(f, "{}({})", cell.upgrade().borrow().name, cell.upgrade().borrow().attributes)
             }
             PortParent::Group(group) => {
-                write!(f, "{}", group.upgrade().borrow().name)
+                write!(f, "{}({})", group.upgrade().borrow().name, group.upgrade().borrow().attributes)
             }
             PortParent::StaticGroup(group) => {
-                write!(f, "{}", group.upgrade().borrow().name)
+                write!(f, "{}({})", group.upgrade().borrow().name, group.upgrade().borrow().attributes)
             }
             PortParent::FSM(fsm) => {
-                write!(f, "{}", fsm.upgrade().borrow().name)
+                write!(f, "{}({})", fsm.upgrade().borrow().name, fsm.upgrade().borrow().attributes)
             }
         }
     }
@@ -571,21 +571,25 @@ impl<T: fmt::Display> fmt::Display for Assignment<T> {
         if self.guard.is_true() {
             write!(
                 f,
-                "{}.{} = {}.{}",
+                "{}.{}({}) = {}.{}({})",
                 dst.get_parent_name(),
                 dst.name,
+                dst.attributes,
                 src.get_parent_name(),
                 src.name,
+                src.attributes,
             )
         } else {
             write!(
                 f,
-                "{}.{} = {} ? {}.{}",
+                "{}.{}({}) = {} ? {}.{}({})",
                 dst.get_parent_name(),
                 dst.name,
+                dst.attributes,
                 self.guard,
                 src.get_parent_name(),
                 src.name,
+                src.attributes,
             )
         }
     }
@@ -924,6 +928,31 @@ pub struct FSM {
     pub transitions: Vec<Transition>,
     // Wire representing fsm output
     pub wires: SmallVec<[RRC<Port>; 2]>,
+}
+
+impl fmt::Display for FSM {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.assignments
+            .iter()
+            .enumerate()
+            .map(|(idx, state)| {
+                format!(
+                "State {} -> ({}): [\n    {}\n]\n",
+                idx,
+                self.transitions[idx],
+                state.iter()
+                    .map(|assign| assign.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n    ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+        )
+    }
 }
 
 impl FSM {
