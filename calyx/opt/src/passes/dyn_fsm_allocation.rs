@@ -15,7 +15,7 @@ use petgraph::{dot, Graph};
 use petgraph::graph::DiGraph;
 use serde::Serialize;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{repeat, Write};
 use std::rc::Rc;
@@ -103,9 +103,9 @@ struct Schedule<'b, 'a: 'b> {
     /// A mapping from groups to corresponding FSM state ids
     pub groups_to_states: HashSet<FSMStateInfo>,
     /// Assigments that should be enabled in a given state.
-    pub enables: HashMap<u64, Vec<ir::Assignment<Nothing>>>,
+    pub enables: BTreeMap<u64, Vec<ir::Assignment<Nothing>>>,
     /// FSMs that should be triggered in a given state.
-    pub fsm_enables: HashMap<u64, Vec<ir::Assignment<Nothing>>>,
+    pub fsm_enables: BTreeMap<u64, Vec<ir::Assignment<Nothing>>>,
     /// Transition from one state to another when the guard is true.
     pub transitions: Vec<(u64, u64, ir::Guard<Nothing>)>,
     /// The component builder. The reference has a shorter lifetime than the builder itself
@@ -148,8 +148,8 @@ impl<'b, 'a> From<&'b mut ir::Builder<'a>> for Schedule<'b, 'a> {
     fn from(builder: &'b mut ir::Builder<'a>) -> Self {
         Schedule {
             groups_to_states: HashSet::new(),
-            enables: HashMap::new(),
-            fsm_enables: HashMap::new(),
+            enables: BTreeMap::new(),
+            fsm_enables: BTreeMap::new(),
             transitions: Vec::new(),
             builder,
         }
@@ -248,8 +248,8 @@ impl<'b, 'a> Schedule<'b, 'a> {
         }
     
         // map each source state to a list of conditional transitions
-        let mut transitions_map: HashMap<u64, Vec<(ir::Guard<Nothing>, u64)>> =
-            HashMap::new();
+        let mut transitions_map: BTreeMap<u64, Vec<(ir::Guard<Nothing>, u64)>> =
+            BTreeMap::new();
         self.transitions.into_iter().for_each(
             |(s, e, g)| match transitions_map.get_mut(&(s + 1)) {
                 Some(next_states) => next_states.push((g.clone(), e + 1)),
@@ -264,7 +264,7 @@ impl<'b, 'a> Schedule<'b, 'a> {
             VecDeque<ir::Transition>,
             VecDeque<Vec<ir::Assignment<Nothing>>>,
         ) = transitions_map
-            .drain()
+            .into_iter()
             .sorted_by(|(s1, _), (s2, _)| s1.cmp(s2))
             .map(|(state, mut cond_dsts)| {
                 let assigns: Vec<calyx_ir::Assignment<Nothing>> =
@@ -319,7 +319,7 @@ impl<'b, 'a> Schedule<'b, 'a> {
         //             println!();
         //         });
         //     });
-        let mut repeat_set: HashMap<Canonical, Rc<RefCell<Cell>>> = HashMap::new();
+        let mut repeat_set: BTreeMap<Canonical, Rc<RefCell<Cell>>> = BTreeMap::new();
         self.enables.into_iter().for_each(|(state, state_enables)| {
             let mut result = vec![];
             for assign in state_enables.iter() {
@@ -348,9 +348,9 @@ impl<'b, 'a> Schedule<'b, 'a> {
                         src: fsm_out_wire.borrow().get("out"),
                         dst: assign.dst.clone(),
                         attributes: assign.attributes.clone(),
-                        guard: Box::new(ir::Guard::And(assign.guard.clone(), 
-                                                       Box::new(guard!(fsm["start"]))).simplify()
-                        ),
+                        // guard: Box::new(ir::Guard::And(assign.guard.clone(), 
+                        //                                Box::new(guard!(fsm["start"]))).simplify()
+                        guard: assign.guard.clone(),
                     }
                 ]);
             }
@@ -440,7 +440,14 @@ impl Schedule<'_, '_> {
             // Add group to mapping for emitting group JSON info
             self.groups_to_states.insert(FSMStateInfo { id: cur_state, group: group.borrow().name() });
 
-            // let not_done = !guard!(group["done"]);
+            let done_cond = group.borrow().done_cond().clone();
+
+            let group_done_cond =  if done_cond.src.borrow().is_constant(){
+                ir::Guard::True
+            } else {
+                ir::Guard::Not(Box::new(ir::Guard::Port(done_cond.src)))
+            };
+            
             let signal_on = self.builder.add_constant(1, 1);
 
             // Activate this group in the current state
@@ -453,7 +460,7 @@ impl Schedule<'_, '_> {
                     src: assign.src.clone(),
                     dst: assign.dst.clone(),
                     attributes: assign.attributes.clone(),
-                    guard: Box::new(ir::Guard::True),
+                    guard: Box::new(group_done_cond.clone()),
                 });
             }
  

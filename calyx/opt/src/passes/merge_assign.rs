@@ -31,7 +31,7 @@ impl Named for MergeAssign {
     }
 }
 
-fn merge_assigns<T: Eq + Clone>(
+fn merge_assigns<T: Eq + Clone + std::fmt::Display>(
     assigns: Vec<ir::Assignment<T>>,
 ) -> Vec<ir::Assignment<T>> {
     // Map from (dst, src) -> Assignment
@@ -45,8 +45,10 @@ fn merge_assigns<T: Eq + Clone>(
         let dst_key = assign.dst.borrow().canonical();
         let key = (dst_key, src_key);
         if let Some(asgn) = map.get_mut(&key) {
-            *asgn.guard |= *assign.guard;
-            *asgn.guard = asgn.guard.simplify();
+            if !assign.guard.is_true() && !asgn.guard.is_true() {
+                *asgn.guard |= *assign.guard;
+                *asgn.guard = asgn.guard.simplify();
+            }
         } else {
             map.insert(key, assign);
         }
