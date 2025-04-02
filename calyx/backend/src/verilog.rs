@@ -5,7 +5,7 @@
 
 use crate::traits::Backend;
 use calyx_ir::{
-    self as ir, Assignment, Control, FlatGuard, Group, Guard, GuardRef, Width, RRC
+    self as ir, Assignment, Canonical, Control, FlatGuard, Group, Guard, GuardRef, Width, RRC
 };
 use calyx_opt::passes::math_utilities::get_bit_width_from;
 use calyx_utils::{CalyxResult, Error, OutputFile};
@@ -550,6 +550,7 @@ fn emit_component<F: io::Write>(
         emit_fsm_module(fsm, comp.name, onehot, f)?;
     }
 
+
     writeln!(f, "module {}(", comp.name)?;
 
     let sig = comp.signature.borrow();
@@ -622,13 +623,20 @@ fn emit_component<F: io::Write>(
         .iter()
         .filter_map(|cell| Some((cell, cell_instance(&cell.borrow()))))
     {
+        if let Some(ty) = cell.borrow().type_name() {
+            if ty == "std_wire"{
+                let src = cell.borrow().get("in");
+                let dst = cell.borrow().get("out");
+                writeln!(f, "assign {} = {};", VerilogPortRef(&dst), VerilogPortRef(&src))?;
+            }
+        }
         let attr_str = format!(
             "(* {} *)",
             cell.borrow()
                 .attributes
                 .to_string_with(", ", |k, v| format!("{}={}", k, v))
         );
-
+    
         if let Some(inst) = instance {
             writeln!(f, "{}\n{}\n", attr_str, inst)?;
         }
@@ -748,6 +756,10 @@ fn wire_decls(cell: &ir::Cell) -> Vec<(String, u64, ir::Direction)> {
 fn cell_instance(cell: &ir::Cell) -> Option<v::Instance> {
     match cell.type_name() {
         Some(ty_name) => {
+            if ty_name == "std_wire"{
+                return None;
+            }
+
             let mut inst =
                 v::Instance::new(cell.name().as_ref(), ty_name.as_ref());
 
@@ -924,15 +936,15 @@ fn emit_fsm_module<F: io::Write>(
     writeln!(f, "  input logic reset,")?;
 
     let mut non_data_ports: BTreeMap<
-        (String, u64),
-        BTreeMap<usize, Assignment<Nothing>>,
+    (String, u64),
+    BTreeMap<usize, Assignment<Nothing>>,
     > = BTreeMap::new();
     for assigns in fsm.borrow().merge_assignments().iter() {
         let dst = &assigns[0].1.dst;
         if is_data_port(dst) {
             continue;
         }
-
+        
         let port_name = VerilogPortRef(&dst).to_string();
         assert_ne!(
             non_data_ports.contains_key(&(port_name.clone(), dst.borrow().width)),
@@ -940,27 +952,41 @@ fn emit_fsm_module<F: io::Write>(
             "repeated port name"
         );
         let assigns_at_time: BTreeMap<usize, Assignment<Nothing>> =
-            BTreeMap::from_iter(assigns.iter().cloned());
-
+        BTreeMap::from_iter(assigns.iter().cloned());
+        
         non_data_ports.insert((port_name.clone(), dst.borrow().width), assigns_at_time);
+    }
+    
+    let mut unique_go_ports: BTreeMap<String, HashMap<usize, Assignment<Nothing>>> = BTreeMap::new();
+    for assigns in fsm.borrow().merge_assignments().iter() {
+        let dst = &assigns[0].1.dst;
+        if is_go_port(dst) || is_done_port(dst) {
+            let assigns_at_time: HashMap<usize, Assignment<Nothing>> =
+                HashMap::from_iter(assigns.iter().cloned());
+            unique_go_ports.insert(VerilogPortRef(dst).to_string(), assigns_at_time);
+        }
     }
 
     let mut used_port_names: HashSet<String> = HashSet::new();
     let mut port_list: Vec<String> = vec![];
 
-    for p in non_data_ports.keys() {
-        if used_port_names.insert(p.0.to_string()) {
-            port_list.push(format!("  output logic [{}:0] {}", p.1-1, p.0));
+    for assign in fsm.borrow().merge_assignments().iter() {
+        let dst = &assign[0].1.dst;
+        if used_port_names.insert(VerilogPortRef(dst).to_string()) {
+            port_list.push(format!("  output logic [{}:0] {}", dst.borrow().width-1, VerilogPortRef(dst)));
         }
     }
 
-    for assign in non_data_ports.values().flat_map(|m| m.values()) {
-        if assign.src.borrow().is_constant() {
-            continue;
-        }
-        if used_port_names.insert(assign.src.borrow().canonical().to_string()) {
-            port_list
-                .push(format!("  input logic [{}:0] {}", assign.src.borrow().width-1,  VerilogPortRef(&assign.src)));
+    for assigns in  fsm.borrow().merge_assignments().iter(){
+        for assign in assigns{
+            let src = &assign.1.src;
+            if src.borrow().is_constant() {
+                continue;
+            }
+            if used_port_names.insert(src.borrow().canonical().to_string()) {
+                port_list
+                    .push(format!("  input logic [{}:0] {}", src.borrow().width-1,  VerilogPortRef(&src)));
+            }
         }
     }
 
@@ -985,12 +1011,12 @@ fn emit_fsm_module<F: io::Write>(
         }
     }
 
-    for i in 0..fsm.borrow().assignments.len() {
-        let port_name = format!("{}_s{i}_out", fsm.borrow().name());
-        if used_port_names.insert(port_name.clone()) {
-            port_list.push(format!("  output logic {}", port_name));
-        }
-    }
+    // for i in 0..fsm.borrow().assignments.len() {
+    //     let port_name = format!("{}_s{i}_out", fsm.borrow().name());
+    //     if used_port_names.insert(port_name.clone()) {
+    //         port_list.push(format!("  output logic {}", port_name));
+    //     }
+    // }
 
     writeln!(f, "{}", port_list.join(",\n"))?;
     writeln!(f, ");\n")?;
@@ -1046,28 +1072,20 @@ fn emit_fsm_module<F: io::Write>(
     // At each state, write the updates to the state and the outward-facing
     // wires to make high / low
 
+
     for (case, trans) in fsm.borrow().transitions.iter().enumerate() {
         writeln!(f, "        S{case}: begin")?;
 
-        for (k, v) in non_data_ports.iter() {
-            let assign = v.get(&case);
-            if let Some(assign) = assign {
+        for (dst, assigns) in unique_go_ports.iter() {
+            if let Some(assign) = assigns.get(&case) {
                 writeln!(
                     f,
                     "          {} = {};",
-                    k.0,
+                    dst,
                     VerilogPortRef(&assign.src)
                 )?;
             } else {
-                writeln!(f, "          {} = 'b0;", k.0)?;
-            }
-        }
-        for i in 0..fsm.borrow().transitions.len(){
-            let port_name = format!("{}_s{i}_out", fsm.borrow().name());
-            if i == case {
-                writeln!(f, "          {} = 1'b1;", port_name)?;
-            } else {
-                writeln!(f, "          {} = 1'b0;", port_name)?;
+                writeln!(f, "          {} = 'b0;", dst)?;
             }
         }
 
@@ -1079,12 +1097,8 @@ fn emit_fsm_module<F: io::Write>(
 
     writeln!(f, "      default begin")?;
 
-    for k in non_data_ports.keys() {
-        writeln!(f, "          {} = 'b0;", k.0)?;
-    }
-    for i in 0..fsm.borrow().transitions.len(){
-        let port_name = format!("{}_s{i}_out", fsm.borrow().name());
-        writeln!(f, "          {} = 1'b0;", port_name)?;
+    for k in unique_go_ports.keys() {
+        writeln!(f, "          {} = 'b0;", k)?;
     }
 
     writeln!(f, "          next_state = S0;")?;
@@ -1092,6 +1106,52 @@ fn emit_fsm_module<F: io::Write>(
     // Wrap up the module
     writeln!(f, "    endcase")?;
     writeln!(f, "  end")?;
+
+    for collection in fsm.borrow().merge_assignments().iter() {
+        let dst_ref = &collection.first().unwrap().1.dst;
+        if is_go_port(dst_ref) || is_done_port(dst_ref) {
+            continue;
+        }
+        
+        // Check if all assignments to this destination have the same source
+        let all_same_src = collection.iter().skip(1).all(|(_, assign)| {
+            let first_src = collection[0].1.src.borrow().canonical();
+            let current_src = assign.src.borrow().canonical();
+            first_src == current_src
+        });
+
+        // If all sources are the same, we can simplify the assignment
+        if all_same_src && collection.len() > 0 {
+            writeln!(f, "assign {} = {};", 
+                     VerilogPortRef(dst_ref), 
+                     VerilogPortRef(&collection[0].1.src))?;
+            continue;
+        }
+
+        writeln!(f, "assign {} = ", VerilogPortRef(dst_ref))?;
+        for (stat, assign) in collection.iter() {
+            if stat == &0 {
+                continue;
+            }
+            let case_guard = format!("current_state == S{stat}");
+            let case_guarded_assign_guard = if assign.guard.is_true() {
+                case_guard
+            } else {
+                format!(
+                    "({case_guard} & ({}))",
+                    unflattened_guard(&assign.guard)
+                )
+            };
+            writeln!(
+                f,
+                "       {} ? {} :",
+                case_guarded_assign_guard,
+                VerilogPortRef(&assign.src)
+            )?;
+        }
+        writeln!(f, "       'dx;")?;
+    }
+
     writeln!(f, "endmodule\n")?;
 
     io::Result::Ok(())
@@ -1188,6 +1248,49 @@ fn is_data_port(pr: &RRC<ir::Port>) -> bool {
     }
     false
 }
+
+/// Checks if:
+/// 1. The port is marked with `@go`
+/// 2. The port's cell parent is marked with `@go`
+fn is_go_port(pr: &RRC<ir::Port>) -> bool {
+    assert_eq!(ir::Direction::Input, pr.borrow().direction);
+    let port = pr.borrow();
+    if !port.attributes.has(ir::NumAttr::Go) {
+        return false;
+    }
+    if let ir::PortParent::Cell(cwr) = &port.parent {
+        let cr = cwr.upgrade();
+        let cell = cr.borrow();
+        // For cell.is_this() ports that were externalized, we already checked
+        // that the parent cell had the `@go` attribute.
+        if cell.attributes.has(ir::NumAttr::Go) || cell.is_this() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Checks if:
+/// 1. The port is marked with `@done`
+/// 2. The port's cell parent is marked with `@done`
+fn is_done_port(pr: &RRC<ir::Port>) -> bool {
+    assert_eq!(ir::Direction::Input, pr.borrow().direction);
+    let port = pr.borrow();
+    if !port.attributes.has(ir::NumAttr::Done) {
+        return false;
+    }
+    if let ir::PortParent::Cell(cwr) = &port.parent {
+        let cr = cwr.upgrade();
+        let cell = cr.borrow();
+        // For cell.is_this() ports that were externalized, we already checked
+        // that the parent cell had the `@go` attribute.
+        if cell.attributes.has(ir::NumAttr::Done) || cell.is_this() {
+            return true;
+        }
+    }
+    false
+}
+
 
 /// Generates an assign statement that uses ternaries to select the correct
 /// assignment to enable and adds a default assignment to 0 when none of the

@@ -36,6 +36,11 @@ fn rewrite(map: &HoleMapping, port: &RRC<ir::Port>) -> Option<RRC<ir::Cell>> {
         } else {
             done
         };
+        if port.borrow().name == "start"{
+            cell.borrow_mut().add_attribute(ir::NumAttr::Go, 1);
+        } else if port.borrow().name == "done" {
+            cell.borrow_mut().add_attribute(ir::NumAttr::Done, 1);
+        }
         Some(Rc::clone(cell))
     } else {
         None
@@ -45,9 +50,11 @@ fn rewrite(map: &HoleMapping, port: &RRC<ir::Port>) -> Option<RRC<ir::Cell>> {
 fn rewrite_assign(map: &HoleMapping, assign: &mut ir::Assignment<Nothing>) {
     if let Some(cell) = rewrite(map, &assign.dst) {
         assign.dst = cell.borrow().get("in");
+        assign.dst.borrow_mut().attributes = cell.borrow().attributes.clone();
     }
     if let Some(cell) = rewrite(map, &assign.src) {
         assign.src = cell.borrow().get("out");
+        assign.src.borrow_mut().attributes = cell.borrow().attributes.clone();
     }
     assign.guard.for_each(&mut |port| {
         rewrite(map, &port)

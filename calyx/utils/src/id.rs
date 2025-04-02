@@ -19,6 +19,10 @@ impl Id {
             id: GSym::from(id.to_string()),
         }
     }
+
+    pub fn as_str(&self) -> &str {
+        self.id.as_str()
+    }
 }
 
 /* =================== Impls for Id to make them easier to use ============== */

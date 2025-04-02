@@ -10,11 +10,7 @@ use crate::passes::{
     SimplifyWithControl, StaticFSMAllocation, StaticFSMOpts, StaticInference,
     StaticInliner, StaticPromotion, StaticRepeatFSMAllocation,
     SynthesisPapercut, TopDownCompileControl, UnrollBounded, WellFormed,
-    WireInliner, WrapMain,
-    SimplifyWithControl, StaticFSMAllocation, StaticFSMOpts, StaticInference,
-    StaticInliner, StaticPromotion, StaticRepeatFSMAllocation,
-    SynthesisPapercut, TopDownCompileControl, UnrollBounded, WellFormed,
-    WireInliner, WrapMain,
+    WireInliner, WrapMain, AssignNodeId, 
 };
 use crate::passes_experimental::{
     CompileSync, CompileSyncWithoutSyncReg, DiscoverExternal, ExternalToRef,
@@ -63,6 +59,7 @@ impl PassManager {
         pm.register_pass::<CompileSync>()?;
         pm.register_pass::<CompileSyncWithoutSyncReg>()?;
         pm.register_pass::<AddGuard>()?;
+        pm.register_pass::<AssignNodeId>()?;
         pm.register_pass::<DynamicFSMAllocation>()?;
 
         // Lowering passes
@@ -129,12 +126,17 @@ impl PassManager {
             [
                 DataPathInfer,
                 CollapseControl, // Run it twice: once at beginning of pre-opt, once at end.
+                CollapseControl, // Run it twice: once at beginning of pre-opt, once at end.
                 CompileSyncWithoutSyncReg,
                 GroupToSeq,
                 DeadAssignmentRemoval,
                 GroupToInvoke, // Creates Dead Groups potentially
+                GroupToInvoke, // Creates Dead Groups potentially
                 ComponentInliner,
                 CombProp,
+                DeadCellRemoval, // Clean up dead wires left by CombProp
+                SimplifyWithControl, // Must run before compile-invoke
+                CompileInvoke,   // creates dead comb groups
                 DeadCellRemoval, // Clean up dead wires left by CombProp
                 SimplifyWithControl, // Must run before compile-invoke
                 CompileInvoke,   // creates dead comb groups
@@ -147,7 +149,15 @@ impl PassManager {
                 DeadGroupRemoval, // Static inliner generates lots of dead groups
                 AddGuard,
                 SimplifyStaticGuards,
+                CompileRepeat,
+                DeadGroupRemoval, // Since previous passes potentially create dead groups
+                CollapseControl,
+                StaticInliner,
+                DeadGroupRemoval, // Static inliner generates lots of dead groups
+                AddGuard,
+                SimplifyStaticGuards,
                 DeadGroupRemoval,
+                AssignNodeId,
                 DynamicFSMAllocation,
                 DeadGroupRemoval,
             ]

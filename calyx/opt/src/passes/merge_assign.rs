@@ -31,7 +31,7 @@ impl Named for MergeAssign {
     }
 }
 
-fn merge_assigns<T: Eq>(
+fn merge_assigns<T: Eq + Clone>(
     assigns: Vec<ir::Assignment<T>>,
 ) -> Vec<ir::Assignment<T>> {
     // Map from (dst, src) -> Assignment
@@ -46,6 +46,7 @@ fn merge_assigns<T: Eq>(
         let key = (dst_key, src_key);
         if let Some(asgn) = map.get_mut(&key) {
             *asgn.guard |= *assign.guard;
+            *asgn.guard = asgn.guard.simplify();
         } else {
             map.insert(key, assign);
         }

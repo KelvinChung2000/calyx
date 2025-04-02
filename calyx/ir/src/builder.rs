@@ -91,6 +91,17 @@ impl<'a> Builder<'a> {
             fsm.borrow_mut().wires.push(hole);
         }
 
+        fsm.borrow_mut().get("start").borrow_mut().attributes.insert(
+            ir::NumAttr::Go,
+            1,
+        );
+        
+
+        fsm.borrow_mut().get("done").borrow_mut().attributes.insert(
+            ir::NumAttr::Done,
+            1,
+        );
+
         // Add the group to the component.
         self.component.get_fsms_mut().add(Rc::clone(&fsm));
 
