@@ -10,7 +10,7 @@ use crate::passes::{
     SimplifyWithControl, StaticFSMAllocation, StaticFSMOpts, StaticInference,
     StaticInliner, StaticPromotion, StaticRepeatFSMAllocation,
     SynthesisPapercut, TopDownCompileControl, UnrollBounded, WellFormed,
-    WireInliner, WrapMain,
+    WireInliner, WrapMain, AssignNodeId, 
 };
 use crate::passes_experimental::{
     CompileSync, CompileSyncWithoutSyncReg, DiscoverExternal, ExternalToRef,
@@ -57,6 +57,7 @@ impl PassManager {
         pm.register_pass::<CompileSync>()?;
         pm.register_pass::<CompileSyncWithoutSyncReg>()?;
         pm.register_pass::<AddGuard>()?;
+        pm.register_pass::<AssignNodeId>()?;
         pm.register_pass::<DynamicFSMAllocation>()?;
 
         // Lowering passes
@@ -142,6 +143,7 @@ impl PassManager {
                 AddGuard,
                 SimplifyStaticGuards,
                 DeadGroupRemoval,
+                AssignNodeId,
                 DynamicFSMAllocation,
                 DeadGroupRemoval,
             ]
