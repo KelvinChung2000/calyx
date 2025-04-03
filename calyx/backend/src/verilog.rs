@@ -935,13 +935,13 @@ fn emit_fsm_module<F: io::Write>(
     writeln!(f, "  input logic reset,")?;
 
     
-    let mut unique_go_ports: BTreeMap<String, BTreeMap<usize, Assignment<Nothing>>> = BTreeMap::new();
+    let mut fsm_guarded_port: BTreeMap<String, BTreeMap<usize, Assignment<Nothing>>> = BTreeMap::new();
     for assigns in fsm.borrow().merge_assignments().iter() {
         let dst = &assigns[0].1.dst;
-        if is_go_port(dst) || is_done_port(dst) {
+        if is_go_port(dst) || is_done_port(dst) || !is_data_port(dst) {
             let assigns_at_time: BTreeMap<usize, Assignment<Nothing>> =
                 BTreeMap::from_iter(assigns.iter().cloned());
-            unique_go_ports.insert(VerilogPortRef(dst).to_string(), assigns_at_time);
+            fsm_guarded_port.insert(VerilogPortRef(dst).to_string(), assigns_at_time);
         }
     }
 
@@ -988,13 +988,6 @@ fn emit_fsm_module<F: io::Write>(
             }
         }
     }
-
-    // for i in 0..fsm.borrow().assignments.len() {
-    //     let port_name = format!("{}_s{i}_out", fsm.borrow().name());
-    //     if used_port_names.insert(port_name.clone()) {
-    //         port_list.push(format!("  output logic {}", port_name));
-    //     }
-    // }
 
     writeln!(f, "{}", port_list.join(",\n"))?;
     writeln!(f, ");\n")?;
@@ -1054,7 +1047,7 @@ fn emit_fsm_module<F: io::Write>(
     for (case, trans) in fsm.borrow().transitions.iter().enumerate() {
         writeln!(f, "        S{case}: begin")?;
 
-        for (dst, assigns) in unique_go_ports.iter() {
+        for (dst, assigns) in fsm_guarded_port.iter() {
             if let Some(assign) = assigns.get(&case) {
                 writeln!(
                     f,
@@ -1075,7 +1068,7 @@ fn emit_fsm_module<F: io::Write>(
 
     writeln!(f, "      default begin")?;
 
-    for k in unique_go_ports.keys() {
+    for k in fsm_guarded_port.keys() {
         writeln!(f, "          {} = 'b0;", k)?;
     }
 
@@ -1087,7 +1080,7 @@ fn emit_fsm_module<F: io::Write>(
 
     for collection in fsm.borrow().merge_assignments().iter() {
         let dst_ref = &collection.first().unwrap().1.dst;
-        if is_go_port(dst_ref) || is_done_port(dst_ref) {
+        if fsm_guarded_port.contains_key(&VerilogPortRef(dst_ref).to_string()) {
             continue;
         }
         
@@ -1268,7 +1261,6 @@ fn is_done_port(pr: &RRC<ir::Port>) -> bool {
     }
     false
 }
-
 
 /// Generates an assign statement that uses ternaries to select the correct
 /// assignment to enable and adds a default assignment to 0 when none of the

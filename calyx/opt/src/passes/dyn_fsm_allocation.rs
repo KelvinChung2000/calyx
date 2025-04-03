@@ -305,20 +305,6 @@ impl<'b, 'a> Schedule<'b, 'a> {
         fsm.borrow_mut().assignments.extend(assignments);
         fsm.borrow_mut().transitions.extend(transitions);
 
-        // register group enables dependent on fsm state as assignments in the
-        // relevant state's assignment section
-        // println!("enables:");
-        // self.enables.iter()
-        //     .sorted_by(|(k1, _), (k2, _)| k1.cmp(k2))
-        //     .for_each(|(state, assigns)| {
-        //         println!("  State {}: ", state);
-        //         assigns.iter().for_each(|assign| {
-        //             print!("    ");
-        //             let out = &mut std::io::stdout();
-        //             Printer::write_assignment(assign, 4, out).unwrap();
-        //             println!();
-        //         });
-        //     });
         let mut repeat_set: BTreeMap<Canonical, Rc<RefCell<Cell>>> = BTreeMap::new();
         self.enables.into_iter().for_each(|(state, state_enables)| {
             let mut result = vec![];
