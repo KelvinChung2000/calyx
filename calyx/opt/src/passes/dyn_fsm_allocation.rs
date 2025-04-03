@@ -324,7 +324,7 @@ impl<'b, 'a> Schedule<'b, 'a> {
                     src: assign.src.clone(),
                     dst: fsm_out_wire.borrow().get("in"),
                     attributes: assign.attributes.clone(),
-                    guard: Box::new(ir::Guard::True),
+                    guard: assign.guard.clone(),
                 });
                 fsm_out_wire.borrow_mut().attributes = assign.dst.borrow().attributes.clone();
                 fsm_out_wire.borrow_mut().get("out").borrow_mut().attributes = assign.dst.borrow().attributes.clone();
@@ -507,7 +507,7 @@ impl Schedule<'_, '_> {
                         let (u, v) = timing_interval;
                         // Convert the guard for each iteration
                         for i in u..v{
-                            let new_guard = assign.guard.clone().replace_static_timing_at_time(u).simplify();
+                            let new_guard = assign.guard.clone().replace_static_timing_at_time(i).simplify();
                             self.enables
                                 .entry(cur_state+i)
                                 .or_default()

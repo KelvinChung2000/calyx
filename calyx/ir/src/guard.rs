@@ -254,7 +254,6 @@ impl<T> Guard<T> {
             Guard::And(l, r) => {
                 let l_simplified = l.simplify();
                 let r_simplified = r.simplify();
-                
                 if l_simplified.is_true() {
                     r_simplified
                 } else if r_simplified.is_true() {
@@ -694,10 +693,7 @@ impl Guard<StaticTiming> {
 
     pub fn replace_static_timing_at_time(&mut self, time: u64) -> Self {
         match self {
-            Self::True | Self::CompOp(..) | Self::Port(..) => self.clone(),
-            Self::Not(g) => {
-                g.replace_static_timing_at_time(time)
-            }
+            Self::True | Self::CompOp(..) | Self::Port(..) | Self::Not(..) => self.clone(),
             Self::And(l, r) => {
                 let left = l.replace_static_timing_at_time(time);
                 let right = r.replace_static_timing_at_time(time);                
