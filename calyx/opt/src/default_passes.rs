@@ -144,9 +144,11 @@ impl PassManager {
                 StaticPromotion,
                 CompileRepeat,
                 DeadGroupRemoval, // Since previous passes potentially create dead groups
+                DeadCellRemoval,
                 CollapseControl,
                 StaticInliner,
                 DeadGroupRemoval, // Static inliner generates lots of dead groups
+                DeadCellRemoval,
                 AddGuard,
                 SimplifyStaticGuards,
                 CompileRepeat,

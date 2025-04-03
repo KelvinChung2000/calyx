@@ -956,14 +956,28 @@ fn emit_fsm_module<F: io::Write>(
     }
 
     for assigns in  fsm.borrow().merge_assignments().iter(){
-        for assign in assigns{
-            let src = &assign.1.src;
+        for (_, assign) in assigns{
+            let src = &assign.src;
             if src.borrow().is_constant() {
                 continue;
             }
             if used_port_names.insert(src.borrow().canonical().to_string()) {
                 port_list
                     .push(format!("  input logic [{}:0] {}", src.borrow().width-1,  VerilogPortRef(&src)));
+            }
+
+            for g in assign.guard.all_ports().iter() {
+                if used_port_names
+                    .insert(g.borrow().canonical().to_string())
+                {
+                    if g.borrow().is_constant() {
+                        continue;
+                    }
+                    port_list.push(format!(
+                        "  input logic {}",
+                        VerilogPortRef(g)
+                    ));
+                }
             }
         }
     }
