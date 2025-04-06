@@ -1733,11 +1733,12 @@ impl Visitor for TopDownCompileControl {
         // For each child, build the enabling logic.
         for con in &s.stmts {
             // Build circuitry to enable and disable this group.
-            structure!(builder;
-                let pd = prim std_reg(1);
-            );
 
-            let assigns = if self.infer_fsms {
+            if self.infer_fsms {
+                structure!(builder;
+                    let pd = prim std_reg(1);
+                );
+
                 let fsm = {
                     let mut sch = Schedule::from(&mut builder);
                     sch.calculate_states(con, self.early_transitions)?;
@@ -1752,7 +1753,9 @@ impl Visitor for TopDownCompileControl {
                     pd["in"] = fsm_done ? signal_on["out"];
                     pd["write_en"] = fsm_done ? signal_on["out"];
                 );
-                assigns
+
+                par_group.borrow_mut().assignments.extend(assigns);
+                done_regs.push(pd)
             } else {
                 let group = match con {
                     // Do not compile enables
@@ -1779,6 +1782,10 @@ impl Visitor for TopDownCompileControl {
                     }
                 };
 
+                structure!(builder;
+                    let pd = prim std_reg(1);
+                );
+
                 let group_go = !(guard!(pd["out"] | group["done"]));
                 let group_done = guard!(group["done"]);
 
@@ -1788,11 +1795,10 @@ impl Visitor for TopDownCompileControl {
                     pd["in"] = group_done ? signal_on["out"];
                     pd["write_en"] = group_done ? signal_on["out"];
                 );
-                assigns
-            };
 
-            par_group.borrow_mut().assignments.extend(assigns);
-            done_regs.push(pd)
+                par_group.borrow_mut().assignments.extend(assigns);
+                done_regs.push(pd)
+            };
         }
         // Profiling: save collected information about this par
         self.profiling_info.insert(ProfilingInfo::Par(ParInfo {
