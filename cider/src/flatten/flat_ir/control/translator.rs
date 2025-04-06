@@ -735,38 +735,23 @@ impl FlattenTree for cir::Control {
         let current_idx = handle.next_idx();
         let ctrl = match self {
             cir::Control::FSMEnable(_) => todo!(),
-            cir::Control::Seq(s) => {
-                Control::Seq(Seq::new(s.stmts.iter().map(|s| {
-                    parent_map.insert(s.as_raw(), current_idx);
-                    handle.enqueue(s)
-                })))
-            }
-            cir::Control::Par(p) => {
-                Control::Par(Par::new(p.stmts.iter().map(|s| {
-                    parent_map.insert(s.as_raw(), current_idx);
-                    handle.enqueue(s)
-                })))
-            }
-            cir::Control::If(i) => {
-                parent_map.insert((&*i.tbranch).as_raw(), current_idx);
-                parent_map.insert((&*i.fbranch).as_raw(), current_idx);
-
-                Control::If(If::new(
-                    layout.port_map[&i.port.as_raw()],
-                    i.cond.as_ref().map(|c| group_map.comb_groups[&c.as_raw()]),
-                    handle.enqueue(&i.tbranch),
-                    handle.enqueue(&i.fbranch),
-                ))
-            }
-            cir::Control::While(w) => {
-                parent_map.insert((&*w.body).as_raw(), current_idx);
-
-                Control::While(While::new(
-                    layout.port_map[&w.port.as_raw()],
-                    w.cond.as_ref().map(|c| group_map.comb_groups[&c.as_raw()]),
-                    handle.enqueue(&w.body),
-                ))
-            }
+            cir::Control::Seq(s) => Control::Seq(Seq::new(
+                s.stmts.iter().map(|s| handle.enqueue(s)),
+            )),
+            cir::Control::Par(p) => Control::Par(Par::new(
+                p.stmts.iter().map(|s| handle.enqueue(s)),
+            )),
+            cir::Control::If(i) => Control::If(If::new(
+                layout.port_map[&i.port.as_raw()],
+                i.cond.as_ref().map(|c| group_map.comb_groups[&c.as_raw()]),
+                handle.enqueue(&i.tbranch),
+                handle.enqueue(&i.fbranch),
+            )),
+            cir::Control::While(w) => Control::While(While::new(
+                layout.port_map[&w.port.as_raw()],
+                w.cond.as_ref().map(|c| group_map.comb_groups[&c.as_raw()]),
+                handle.enqueue(&w.body),
+            )),
             cir::Control::Invoke(inv) => {
                 let invoked_cell = layout.cell_map[&inv.comp.as_raw()];
 

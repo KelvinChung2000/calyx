@@ -257,12 +257,13 @@ paths = [
   "tests/correctness/static-interface/*.futil",
 ]
 cmd = """
-fud2 --from calyx --to jq \
-         --through icarus \
-         -s calyx.args="-p fsm-opt -x tdcc:infer-fsms -p lower" \
-         -s sim.cycle_limit=550 \
-         -s sim.data={}.data \
-         -s jq.expr=".memories" \
+fud exec --from calyx --to jq \
+         --through dat \
+         --through icarus-verilog \
+         -s calyx.flags "-p fsm-opt -x tdcc:infer-fsms -p lower" \
+         -s verilog.cycle_limit 550 \
+         -s verilog.data {}.data \
+         -s jq.expr ".memories" \
          {} -q
 """
 timeout = 120

@@ -41,18 +41,72 @@ fn rewrite(map: &HoleMapping, port: &RRC<ir::Port>) -> Option<RRC<ir::Cell>> {
         None
     }
 }
+fn rewrite(map: &HoleMapping, port: &RRC<ir::Port>) -> Option<RRC<ir::Cell>> {
+    let port_cell = &port.borrow().parent;
+    if let ir::PortParent::Group(g) = port_cell {
+        let (go, done) = &map[&g.upgrade().borrow().name()];
+        let cell = if port.borrow().name == "go" { go } else { done };
+        Some(Rc::clone(cell))
+    } else if let ir::PortParent::FSM(f) = port_cell {
+        let fsm_name = &f.upgrade().borrow().name();
+        let (start, done) = &map[fsm_name];
+        let cell = if port.borrow().name == "start" {
+            start
+        } else {
+            done
+        };
+        Some(Rc::clone(cell))
+    } else {
+        None
+    }
+}
 
+fn rewrite_assign(map: &HoleMapping, assign: &mut ir::Assignment<Nothing>) {
+    if let Some(cell) = rewrite(map, &assign.dst) {
 fn rewrite_assign(map: &HoleMapping, assign: &mut ir::Assignment<Nothing>) {
     if let Some(cell) = rewrite(map, &assign.dst) {
         assign.dst = cell.borrow().get("in");
     }
+    if let Some(cell) = rewrite(map, &assign.src) {
     if let Some(cell) = rewrite(map, &assign.src) {
         assign.src = cell.borrow().get("out");
     }
     assign.guard.for_each(&mut |port| {
         rewrite(map, &port)
             .map(|cell| ir::Guard::port(cell.borrow().get("out")))
+        rewrite(map, &port)
+            .map(|cell| ir::Guard::port(cell.borrow().get("out")))
     });
+}
+
+fn rewrite_guard(map: &HoleMapping, guard: &mut ir::Guard<Nothing>) {
+    match guard {
+        ir::Guard::True | ir::Guard::Info(_) => (),
+        // update the port of a port guard to read from appropriate
+        // group wire, if it is dependent on a group's port in the first place
+        ir::Guard::Port(p) => {
+            if let Some(cell) = rewrite(map, p) {
+                let _ = std::mem::replace(p, cell.borrow().get("out"));
+            }
+        }
+        // update the ports of a port-comparison guard to read from appropriate
+        // group wire, if these are dependent on groups' ports in the first place
+        ir::Guard::CompOp(_, p1, p2) => {
+            if let Some(cell) = rewrite(map, p1) {
+                let _ = std::mem::replace(p1, cell.borrow().get("out"));
+            }
+            if let Some(cell) = rewrite(map, p2) {
+                let _ = std::mem::replace(p2, cell.borrow().get("out"));
+            }
+        }
+        ir::Guard::Not(b) => {
+            rewrite_guard(map, &mut *b);
+        }
+        ir::Guard::And(b1, b2) | ir::Guard::Or(b1, b2) => {
+            rewrite_guard(map, &mut *b1);
+            rewrite_guard(map, &mut *b2);
+        }
+    }
 }
 
 fn rewrite_guard(map: &HoleMapping, guard: &mut ir::Guard<Nothing>) {
@@ -95,19 +149,20 @@ impl Visitor for WireInliner {
         let control_ref = Rc::clone(&comp.control);
         let control = control_ref.borrow();
 
+        let this = Rc::clone(&comp.signature);
+        let mut builder = ir::Builder::new(comp, sigs);
+
+        let this_go_port = this
+            .borrow()
+            .find_unique_with_attr(ir::NumAttr::Go)?
+            .unwrap();
+
+        structure!(builder;
+            let one = constant(1, 1);
+        );
+
         match &*control {
             ir::Control::Enable(..) | ir::Control::FSMEnable(..) => {
-                let this = Rc::clone(&comp.signature);
-                let mut builder = ir::Builder::new(comp, sigs);
-
-                let this_go_port = this
-                    .borrow()
-                    .find_unique_with_attr(ir::NumAttr::Go)?
-                    .unwrap();
-
-                structure!(builder;
-                    let one = constant(1, 1);
-                );
                 let assigns = match &*control {
                     ir::Control::Enable(en) => {
                         let group = &en.group;
@@ -147,8 +202,10 @@ impl Visitor for WireInliner {
         // assume static groups is empty
         let groups = comp.get_groups_mut().drain().collect_vec();
         let mut fsms = comp.get_fsms_mut().drain().collect_vec();
+        let mut fsms = comp.get_fsms_mut().drain().collect_vec();
         let mut builder = ir::Builder::new(comp, sigs);
         // for each group, instantiate wires to hold its `go` and `done` signals.
+        let mut hole_map: HoleMapping = groups
         let mut hole_map: HoleMapping = groups
             .iter()
             .map(|gr| {
@@ -166,6 +223,27 @@ impl Visitor for WireInliner {
                 (name, (go, done))
             })
             .collect();
+
+        // add wires to hold `start` and `done` signals for each FSM, which we
+        // compile differently
+        let fsm_interface = fsms
+            .iter()
+            .map(|fsm| {
+                let name = fsm.borrow().name();
+                let start = builder.add_primitive(
+                    format!("{}_start", name),
+                    "std_wire",
+                    &[1],
+                );
+                let done = builder.add_primitive(
+                    format!("{}_done", name),
+                    "std_wire",
+                    &[1],
+                );
+                (name, (start, done))
+            })
+            .collect_vec();
+        hole_map.extend(fsm_interface);
 
         // add wires to hold `start` and `done` signals for each FSM, which we
         // compile differently
@@ -229,6 +307,33 @@ impl Visitor for WireInliner {
             fsm.borrow_mut().transitions = transitions;
         });
 
+        // rewrite the contents of each fsm to use instantiated std_wire prims
+        fsms.iter().for_each(|fsm| {
+            // rewrite all assignments at each state within every fsm
+            let mut assigns =
+                fsm.borrow_mut().assignments.drain(..).collect_vec();
+            for assigns_at_state in assigns.iter_mut() {
+                for asgn in assigns_at_state.iter_mut() {
+                    rewrite_assign(&hole_map, asgn);
+                }
+            }
+            fsm.borrow_mut().assignments = assigns;
+
+            // rewrite all guards in transitions that depend on group port values
+            let mut transitions =
+                fsm.borrow_mut().transitions.drain(..).collect_vec();
+            for trans_at_state in transitions.iter_mut() {
+                if let ir::Transition::Conditional(cond_trans_at_state) =
+                    trans_at_state
+                {
+                    for (cond_trans, _) in cond_trans_at_state {
+                        rewrite_guard(&hole_map, cond_trans)
+                    }
+                }
+            }
+            fsm.borrow_mut().transitions = transitions;
+        });
+
         comp.continuous_assignments
             .iter_mut()
             .for_each(|assign| rewrite_assign(&hole_map, assign));
@@ -239,6 +344,12 @@ impl Visitor for WireInliner {
             .collect_vec();
 
         comp.continuous_assignments.append(&mut group_assigns);
+
+        // reinstate fsms into the component
+        let comp_fsms_collection = comp.get_fsms_mut();
+        fsms.drain(..).for_each(|fsm| {
+            comp_fsms_collection.add(fsm);
+        });
 
         // reinstate fsms into the component
         let comp_fsms_collection = comp.get_fsms_mut();
