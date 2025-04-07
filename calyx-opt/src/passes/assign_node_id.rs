@@ -173,7 +173,7 @@ fn compute_unique_state_ids(con: &mut ir::Control, cur_state: u64) -> u64 {
                 if attributes.has(ir::BoolAttr::NewFSM) {
                     cur_state + 1
                 } else {
-                    cur_state + sc.get_latency() + 1
+                    cur_state + sc.get_latency()
                 }
             } else {
                 unreachable!("static control should have been compiled away. Run the static-inline passes before this pass")

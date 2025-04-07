@@ -90,7 +90,7 @@ fn control_exits(con: &ir::Control, exits: &mut Vec<PredEdge>) {
         ir::Control::Static(sc) => {
             if let ir::StaticControl::Enable(ir::StaticEnable{attributes, ..}) = sc {
                 let cur_state = attributes.get(NODE_ID).unwrap();
-                exits.push((cur_state + sc.get_latency(), ir::Guard::True));
+                exits.push((cur_state + sc.get_latency()-1, ir::Guard::True));
             } else {
                 unreachable!("static control should have been compiled away. Run the static-inline passes before this pass")
             }
@@ -542,7 +542,7 @@ impl Schedule<'_, '_> {
                         }
                     ).collect_vec();
 
-                for i in cur_state..cur_state + sc.get_latency()  {
+                for i in cur_state..cur_state + sc.get_latency()-1  {
                     transitions.push((i, i + 1, ir::Guard::True));
                 }
                     
@@ -557,7 +557,7 @@ impl Schedule<'_, '_> {
                 
                 // always transition to the next state
                 let done_cond = ir::Guard::True;
-                Ok(vec![(cur_state + sc.get_latency(), done_cond)])
+                Ok(vec![(cur_state + sc.get_latency()-1, done_cond)])
             }else{
                 unreachable!("`calculate_states_recur` should not see a static control that is not an enable.")
             }

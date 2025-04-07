@@ -33,12 +33,12 @@ use std::rc::Rc;
 /// ```
 /// into:
 /// ```
-/// group comb_cond<"static"=1> {
+/// static<1> group comb_cond {
 ///     lt.right = 32'd10;
 ///     lt.left = 32'd1;
 ///     eq.right = r.out;
 ///     eq.left = x.out;
-///     lt_reg.in = lt.out
+///     lt_reg.in = lt.out;
 ///     lt_reg.write_en = 1'd1;
 ///     eq_reg.in = eq.out;
 ///     eq_reg.write_en = 1'd1;
@@ -125,35 +125,44 @@ impl Visitor for SimplifyWithControl {
                 // Registers to save value for the group
                 let mut save_regs = Vec::with_capacity(used_ports.len());
                 for port in used_ports {
-                    // Register to save port value
+
                     structure!(builder;
-                        let comb_reg = prim std_reg(port.borrow().width);
-                        let signal_on = constant(1, 1);
+                        let comb_wire = prim std_wire(port.borrow().width);
                     );
                     let write = builder.build_assignment(
-                        comb_reg.borrow().get("in"),
+                        comb_wire.borrow().get("in"),
                         Rc::clone(&port),
                         ir::Guard::True,
                     );
-                    let en = builder.build_assignment(
-                        comb_reg.borrow().get("write_en"),
-                        signal_on.borrow().get("out"),
-                        ir::Guard::True,
-                    );
+                    // // Register to save port value
+                    // structure!(builder;
+                    //     let comb_reg = prim std_reg(port.borrow().width);
+                    //     let signal_on = constant(1, 1);
+                    // );
+                    // let write = builder.build_assignment(
+                    //     comb_reg.borrow().get("in"),
+                    //     Rc::clone(&port),
+                    //     ir::Guard::True,
+                    // );
+                    // let en = builder.build_assignment(
+                    //     comb_reg.borrow().get("write_en"),
+                    //     signal_on.borrow().get("out"),
+                    //     ir::Guard::True,
+                    // );
                     group.assignments.push(write);
-                    group.assignments.push(en);
+                    // group.assignments.push(en);
 
                     // Define mapping from this port to the register's output
                     // value.
                     self.port_rewrite.insert(
                         (name, port.borrow().canonical().clone()),
                         (
-                            Rc::clone(&comb_reg.borrow().get("out")),
+                            Rc::clone(&comb_wire.borrow().get("out")),
                             Rc::clone(&group_ref),
                         ),
                     );
 
-                    save_regs.push(comb_reg);
+                    save_regs.push(comb_wire);
                 }
 
                 // No need for a done condition
