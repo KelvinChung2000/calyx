@@ -240,7 +240,6 @@ fn get_final(c: &ir::Control) -> HashSet<u64> {
     let mut hs = HashSet::new();
     match c {
         ir::Control::Empty(_) | ir::Control::FSMEnable(_) => (), // todo
-        ir::Control::Empty(_) | ir::Control::FSMEnable(_) => (), // todo
         ir::Control::Invoke(_)
         | ir::Control::Enable(_)
         | ir::Control::While(_) => {
@@ -675,7 +674,6 @@ impl DominatorMap {
         }
         match c {
             ir::Control::Empty(_)
-            | ir::Control::FSMEnable(_)
             | ir::Control::Invoke(_)
             | ir::Control::Enable(_)
             | ir::Control::FSMEnable(_) => None,

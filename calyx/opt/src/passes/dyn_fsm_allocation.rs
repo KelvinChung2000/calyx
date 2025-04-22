@@ -3,7 +3,7 @@ use crate::traversal::{
     Action, ConstructVisitor, Named, ParseVal, PassOpt, VisResult, Visitor,
 };
 use calyx_ir::{
-    self as ir, Assignment, BoolAttr, Canonical, Cell, GetAttributes, LibrarySignatures, NumAttr, Printer, StaticTiming, RRC
+    self as ir, Assignment, BoolAttr, Canonical, Cell, GetAttributes, LibrarySignatures, Printer, StaticTiming, RRC
 };
 
 use calyx_ir::{build_assignments, guard, structure, Id};
@@ -17,7 +17,7 @@ use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{repeat, Write};
+use std::io::Write;
 use std::rc::Rc;
 
 const NODE_ID: ir::Attribute =

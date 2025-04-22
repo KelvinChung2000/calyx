@@ -1025,7 +1025,6 @@ impl CompileStatic {
                         PortParent::Group(_) => dst.name != "done",
                         PortParent::FSM(_) => unreachable!(),
                         PortParent::StaticGroup(_) => true,
-                        PortParent::FSM(_) => unreachable!(),
                     }
                 }),
             );

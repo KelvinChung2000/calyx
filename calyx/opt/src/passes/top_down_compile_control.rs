@@ -14,7 +14,6 @@ use itertools::Itertools;
 use petgraph::graph::DiGraph;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::rc::Rc;
 
@@ -56,10 +55,10 @@ fn control_exits(con: &ir::Control, exits: &mut Vec<PredEdge>) {
             let cur_state = attributes.get(NODE_ID).unwrap();
             exits.push((cur_state, guard!(group["done"])))
         }
-        ir::Control::FSMEnable(ir::FSMEnable{attributes, fsm}) => {
+        ir::Control::FSMEnable(ir::FSMEnable { attributes, fsm }) => {
             let cur_state = attributes.get(NODE_ID).unwrap();
             exits.push((cur_state, guard!(fsm["done"])))
-        },
+        }
         ir::Control::Seq(ir::Seq { stmts, .. }) => {
             if let Some(stmt) = stmts.last() {
                 control_exits(stmt, exits)
@@ -130,6 +129,10 @@ fn control_exits(con: &ir::Control, exits: &mut Vec<PredEdge>) {
 fn compute_unique_ids(con: &mut ir::Control, cur_state: u64) -> u64 {
     match con {
         ir::Control::Enable(ir::Enable { attributes, .. }) => {
+            attributes.insert(NODE_ID, cur_state);
+            cur_state + 1
+        }
+        ir::Control::FSMEnable(ir::FSMEnable { attributes, .. }) => {
             attributes.insert(NODE_ID, cur_state);
             cur_state + 1
         }
@@ -205,11 +208,7 @@ fn compute_unique_ids(con: &mut ir::Control, cur_state: u64) -> u64 {
             let body_nxt = compute_unique_ids(body, cur);
             // If new_fsm is true then we want to return cur_state + 1, since this
             // while loop should really only take up 1 "state" on the "outer" fsm
-            if new_fsm{
-                cur_state + 1
-            } else {
-                body_nxt
-            }
+            if new_fsm { cur_state + 1 } else { body_nxt }
         }
         ir::Control::Empty(_) => cur_state,
         ir::Control::Repeat(_) => unreachable!(
@@ -289,8 +288,6 @@ struct Schedule<'b, 'a: 'b> {
     pub enables: HashMap<u64, Vec<ir::Assignment<Nothing>>>,
     /// FSMs that should be triggered in a given state.
     pub fsm_enables: HashMap<u64, Vec<ir::Assignment<Nothing>>>,
-    /// FSMs that should be triggered in a given state.
-    pub fsm_enables: HashMap<u64, Vec<ir::Assignment<Nothing>>>,
     /// Transition from one state to another when the guard is true.
     pub transitions: Vec<(u64, u64, ir::Guard<Nothing>)>,
     /// The component builder. The reference has a shorter lifetime than the builder itself
@@ -302,6 +299,7 @@ struct Schedule<'b, 'a: 'b> {
 #[derive(PartialEq, Eq, Hash, Clone, Serialize)]
 enum ProfilingInfo {
     Fsm(FSMInfo),
+    Par(ParInfo),
     SingleEnable(SingleEnableInfo),
 }
 
@@ -313,6 +311,23 @@ struct SingleEnableInfo {
     pub component: Id,
     #[serde(serialize_with = "id_serialize_passthrough")]
     pub group: Id,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Serialize)]
+struct ParInfo {
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub component: Id,
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub par_group: Id,
+    pub child_groups: Vec<ParChildInfo>,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Serialize)]
+struct ParChildInfo {
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub group: Id,
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub register: Id,
 }
 
 /// Information to be serialized for a single FSM
@@ -347,7 +362,6 @@ impl<'b, 'a> From<&'b mut ir::Builder<'a>> for Schedule<'b, 'a> {
         Schedule {
             groups_to_states: HashSet::new(),
             enables: HashMap::new(),
-            fsm_enables: HashMap::new(),
             fsm_enables: HashMap::new(),
             transitions: Vec::new(),
             builder,
@@ -744,7 +758,6 @@ impl Schedule<'_, '_> {
                     None => vec![],
                     Some(assigns) => assigns.clone(),
                 };
-
                 // self-loop if all other guards are not met;
                 // should be at the end of the conditional destinations vec!
                 cond_dsts.push((ir::Guard::True, state));
@@ -812,57 +825,74 @@ impl Schedule<'_, '_> {
         has_fast_guarantee: bool,
     ) -> CalyxResult<Vec<PredEdge>> {
         match con {
-            ir::Control::FSMEnable(ir::FSMEnable {fsm, attributes}) => {
-                let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| panic!("Group `{}` does not have state_id information", fsm.borrow().name()));
-                let (cur_state, prev_states) = if preds.len() == 1 && preds[0].1.is_true() {
-                    (preds[0].0, vec![])
-                } else {
-                    (cur_state, preds)
-                };
+            ir::Control::FSMEnable(ir::FSMEnable { fsm, attributes }) => {
+                let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| {
+                    panic!(
+                        "Group `{}` does not have state_id information",
+                        fsm.borrow().name()
+                    )
+                });
+                let (cur_state, prev_states) =
+                    if preds.len() == 1 && preds[0].1.is_true() {
+                        (preds[0].0, vec![])
+                    } else {
+                        (cur_state, preds)
+                    };
                 // Add group to mapping for emitting group JSON info
-                self.groups_to_states.insert(FSMStateInfo { id: cur_state, group: fsm.borrow().name() });
+                self.groups_to_states.insert(FSMStateInfo {
+                    id: cur_state,
+                    group: fsm.borrow().name(),
+                });
 
                 let not_done = !guard!(fsm["done"]);
                 let signal_on = self.builder.add_constant(1, 1);
-    
+
                 // Activate this fsm in the current state
-                let en_go : [ir::Assignment<Nothing>; 1] = build_assignments!(self.builder;
+                let en_go: [ir::Assignment<Nothing>; 1] = build_assignments!(self.builder;
                     fsm["start"] = not_done ? signal_on["out"];
                 );
-    
+
                 self.fsm_enables.entry(cur_state).or_default().extend(en_go);
-    
+
                 // Enable FSM to be triggered by states besides the most recent
                 if early_transitions || has_fast_guarantee {
                     for (st, g) in &prev_states {
                         let early_go = build_assignments!(self.builder;
                             fsm["start"] = g ? signal_on["out"];
                         );
-                        self.fsm_enables.entry(*st).or_default().extend(early_go);
+                        self.fsm_enables
+                            .entry(*st)
+                            .or_default()
+                            .extend(early_go);
                     }
                 }
-    
+
                 let transitions = prev_states
                     .into_iter()
                     .map(|(st, guard)| (st, cur_state, guard));
                 self.transitions.extend(transitions);
-    
+
                 let done_cond = guard!(fsm["done"]);
                 Ok(vec![(cur_state, done_cond)])
-    
-            },
-        // See explanation of FSM states generated in [ir::TopDownCompileControl].
-        ir::Control::Enable(ir::Enable { group, attributes }) => {
-            let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| panic!("Group `{}` does not have node_id information", group.borrow().name()));
-            // If there is exactly one previous transition state with a `true`
-            // guard, then merge this state into previous state.
-            // This happens when the first control statement is an enable not
-            // inside a branch.
-            let (cur_state, prev_states) = if preds.len() == 1 && preds[0].1.is_true() {
-                (preds[0].0, vec![])
-            } else {
-                (cur_state, preds)
-            };
+            }
+            // See explanation of FSM states generated in [ir::TopDownCompileControl].
+            ir::Control::Enable(ir::Enable { group, attributes }) => {
+                let cur_state = attributes.get(NODE_ID).unwrap_or_else(|| {
+                    panic!(
+                        "Group `{}` does not have node_id information",
+                        group.borrow().name()
+                    )
+                });
+                // If there is exactly one previous transition state with a `true`
+                // guard, then merge this state into previous state.
+                // This happens when the first control statement is an enable not
+                // inside a branch.
+                let (cur_state, prev_states) =
+                    if preds.len() == 1 && preds[0].1.is_true() {
+                        (preds[0].0, vec![])
+                    } else {
+                        (cur_state, preds)
+                    };
 
                 // Add group to mapping for emitting group JSON info
                 self.groups_to_states.insert(FSMStateInfo {
@@ -1259,9 +1289,7 @@ pub struct TopDownCompileControl {
     /// Enable early transitions
     early_transitions: bool,
     /// Bookkeeping for FSM ids for groups across all FSMs in the program
-    fsm_groups: HashSet<ProfilingInfo>,
-    /// Decides whether FSMs are emitted as normal (inlined) or such that synthesis tool infers + optimizes FSM
-    infer_fsms: bool,
+    profiling_info: HashSet<ProfilingInfo>,
     /// Decides whether FSMs are emitted as normal (inlined) or such that synthesis tool infers + optimizes FSM
     infer_fsms: bool,
     /// How many states the dynamic FSM must have before picking binary over one-hot
@@ -1311,8 +1339,7 @@ impl ConstructVisitor for TopDownCompileControl {
             dump_fsm: opts[&"dump-fsm"].bool(),
             dump_fsm_json: opts[&"dump-fsm-json"].not_null_outstream(),
             early_transitions: opts[&"early-transitions"].bool(),
-            fsm_groups: HashSet::new(),
-            infer_fsms: opts[&"infer-fsms"].bool(),
+            profiling_info: HashSet::new(),
             infer_fsms: opts[&"infer-fsms"].bool(),
             one_hot_cutoff: opts[&"one-hot-cutoff"]
                 .pos_num()
@@ -1354,12 +1381,6 @@ impl Named for TopDownCompileControl {
             PassOpt::new(
                 "early-transitions",
                 "Experimental: Enable early transitions for group enables",
-                ParseVal::Bool(false),
-                PassOpt::parse_bool,
-            ),
-            PassOpt::new(
-                "infer-fsms",
-                "Emits FSMs that are inferred and optimized by Vivado toolchain",
                 ParseVal::Bool(false),
                 PassOpt::parse_bool,
             ),
@@ -1417,7 +1438,7 @@ impl Visitor for TopDownCompileControl {
                 if let Some(enable_info) =
                     extract_single_enable(&mut con, comp.name)
                 {
-                    self.fsm_groups
+                    self.profiling_info
                         .insert(ProfilingInfo::SingleEnable(enable_info));
                 }
                 Ok(Action::Stop)
@@ -1443,7 +1464,6 @@ impl Visitor for TopDownCompileControl {
         let mut builder = ir::Builder::new(comp, sigs);
         let mut sch = Schedule::from(&mut builder);
 
-
         sch.calculate_states_seq(s, self.early_transitions)?;
 
         // compile schedule and return the enable node
@@ -1453,32 +1473,16 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &s.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
 
-        // compile schedule and return the enable node
-        let mut seq_enable = if self.infer_fsms {
-            ir::Control::fsm_enable(sch.realize_fsm(self.dump_fsm))
-        } else {
-            let fsm_impl = self.get_representation(&sch, &s.attributes);
-            ir::Control::enable(sch.realize_schedule(
-                self.dump_fsm,
-                &mut self.fsm_groups,
-                fsm_impl,
-            ))
-        };
-
-        // Add NODE_ID to compiled enable.
-        let state_id = s.attributes.get(NODE_ID).unwrap();
-        seq_enable.get_mut_attributes().insert(NODE_ID, state_id);
         // Add NODE_ID to compiled enable.
         let state_id = s.attributes.get(NODE_ID).unwrap();
         seq_enable.get_mut_attributes().insert(NODE_ID, state_id);
 
         Ok(Action::change(seq_enable))
-       
     }
 
     fn finish_if(
@@ -1504,19 +1508,7 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &i.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
-                fsm_impl,
-            ))
-        };
-
-        // Compile schedule and return the group.
-        let mut if_enable = if self.infer_fsms {
-            ir::Control::fsm_enable(sch.realize_fsm(self.dump_fsm))
-        } else {
-            let fsm_impl = self.get_representation(&sch, &i.attributes);
-            ir::Control::enable(sch.realize_schedule(
-                self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
@@ -1524,9 +1516,7 @@ impl Visitor for TopDownCompileControl {
         // Add NODE_ID to compiled group.
         let node_id = i.attributes.get(NODE_ID).unwrap();
         if_enable.get_mut_attributes().insert(NODE_ID, node_id);
-        if_enable.get_mut_attributes().insert(NODE_ID, node_id);
 
-        Ok(Action::change(if_enable))
         Ok(Action::change(if_enable))
     }
 
@@ -1552,35 +1542,19 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &w.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
 
-        // compile schedule and return the enable node
-        let mut while_enable = if self.infer_fsms {
-            ir::Control::fsm_enable(sch.realize_fsm(self.dump_fsm))
-        } else {
-            let fsm_impl = self.get_representation(&sch, &w.attributes);
-            ir::Control::enable(sch.realize_schedule(
-                self.dump_fsm,
-                &mut self.fsm_groups,
-                fsm_impl,
-            ))
-        };
-
-        // Add NODE_ID to compiled enable.
         // Add NODE_ID to compiled enable.
         let node_id = w.attributes.get(NODE_ID).unwrap();
         while_enable.get_mut_attributes().insert(NODE_ID, node_id);
-        while_enable.get_mut_attributes().insert(NODE_ID, node_id);
 
-        Ok(Action::change(while_enable))
         Ok(Action::change(while_enable))
     }
 
     /// Compile each child in `par` block separately so each child can make
-    /// progress independently.
     /// progress independently.
     fn finish_par(
         &mut self,
@@ -1601,14 +1575,18 @@ impl Visitor for TopDownCompileControl {
         // Registers to save the done signal from each child.
         let mut done_regs = Vec::with_capacity(s.stmts.len());
 
+        // Profiling: record each par child (arm)'s group and done register
+        let child_infos = Vec::with_capacity(s.stmts.len());
+
         // For each child, build the enabling logic.
         for con in &s.stmts {
             // Build circuitry to enable and disable this group.
-            structure!(builder;
-                let pd = prim std_reg(1);
-            );
 
-            let assigns = if self.infer_fsms {
+            if self.infer_fsms {
+                structure!(builder;
+                    let pd = prim std_reg(1);
+                );
+
                 let fsm = {
                     let mut sch = Schedule::from(&mut builder);
                     sch.calculate_states(con, self.early_transitions)?;
@@ -1623,17 +1601,19 @@ impl Visitor for TopDownCompileControl {
                     pd["in"] = fsm_done ? signal_on["out"];
                     pd["write_en"] = fsm_done ? signal_on["out"];
                 );
-                assigns
+
+                par_group.borrow_mut().assignments.extend(assigns);
+                done_regs.push(pd)
             } else {
                 let group = match con {
                     // Do not compile enables
                     ir::Control::Enable(ir::Enable { group, .. }) => {
-                        self.fsm_groups.insert(ProfilingInfo::SingleEnable(
-                            SingleEnableInfo {
+                        self.profiling_info.insert(
+                            ProfilingInfo::SingleEnable(SingleEnableInfo {
                                 group: group.borrow().name(),
                                 component: builder.component.name,
-                            },
-                        ));
+                            }),
+                        );
                         Rc::clone(group)
                     }
                     // Compile complex schedule and return the group.
@@ -1644,11 +1624,15 @@ impl Visitor for TopDownCompileControl {
                             self.get_representation(&sch, &s.attributes);
                         sch.realize_schedule(
                             self.dump_fsm,
-                            &mut self.fsm_groups,
+                            &mut self.profiling_info,
                             fsm_impl,
                         )
                     }
                 };
+
+                structure!(builder;
+                    let pd = prim std_reg(1);
+                );
 
                 let group_go = !(guard!(pd["out"] | group["done"]));
                 let group_done = guard!(group["done"]);
@@ -1659,12 +1643,17 @@ impl Visitor for TopDownCompileControl {
                     pd["in"] = group_done ? signal_on["out"];
                     pd["write_en"] = group_done ? signal_on["out"];
                 );
-                assigns
-            };
 
-            par_group.borrow_mut().assignments.extend(assigns);
-            done_regs.push(pd)
+                par_group.borrow_mut().assignments.extend(assigns);
+                done_regs.push(pd)
+            };
         }
+        // Profiling: save collected information about this par
+        self.profiling_info.insert(ProfilingInfo::Par(ParInfo {
+            component: builder.component.name,
+            par_group: par_group.borrow().name(),
+            child_groups: child_infos,
+        }));
 
         // Done condition for this group
         let done_guard = done_regs
@@ -1710,7 +1699,6 @@ impl Visitor for TopDownCompileControl {
         sigs: &LibrarySignatures,
         _comps: &[ir::Component],
     ) -> VisResult {
-
         let control = Rc::clone(&comp.control);
         let attrs = comp.attributes.clone();
         let mut builder = ir::Builder::new(comp, sigs);
@@ -1725,23 +1713,11 @@ impl Visitor for TopDownCompileControl {
             let fsm_rep = self.get_representation(&sch, &attrs);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_rep,
             ))
         };
 
-        let control_node = if self.infer_fsms {
-            ir::Control::fsm_enable(sch.realize_fsm(self.dump_fsm))
-        } else {
-            let fsm_rep = self.get_representation(&sch, &attrs);
-            ir::Control::enable(sch.realize_schedule(
-                self.dump_fsm,
-                &mut self.fsm_groups,
-                fsm_rep,
-            ))
-        };
-
-        Ok(Action::change(control_node))
         Ok(Action::change(control_node))
     }
 
@@ -1750,7 +1726,7 @@ impl Visitor for TopDownCompileControl {
         if let Some(json_out_file) = &mut self.dump_fsm_json {
             let _ = serde_json::to_writer_pretty(
                 json_out_file.get_write(),
-                &self.fsm_groups,
+                &self.profiling_info,
             );
         }
         Ok(Action::Continue)
