@@ -1,6 +1,6 @@
 use crate::traversal::{Action, Named, VisResult, Visitor};
 use calyx_ir as ir;
-use ir::{LibrarySignatures, build_assignments, guard, structure};
+use ir::{build_assignments, guard, structure, LibrarySignatures};
 use ir::{Nothing, RRC};
 use itertools::Itertools;
 use std::{collections::HashMap, rc::Rc};
@@ -29,13 +29,18 @@ fn rewrite(map: &HoleMapping, port: &RRC<ir::Port>) -> Option<RRC<ir::Cell>> {
         let cell = if port.borrow().name == "go" { go } else { done };
         Some(Rc::clone(cell))
     } else if let ir::PortParent::FSM(f) = port_cell {
-        let fsm_name = &f.upgrade().borrow().name();
-        let (start, done) = &map[fsm_name];
+        let bruh = &f.upgrade().borrow().name();
+        let (start, done) = &map[bruh];
         let cell = if port.borrow().name == "start" {
             start
         } else {
             done
         };
+        if port.borrow().name == "start"{
+            cell.borrow_mut().add_attribute(ir::NumAttr::Go, 1);
+        } else if port.borrow().name == "done" {
+            cell.borrow_mut().add_attribute(ir::NumAttr::Done, 1);
+        }
         Some(Rc::clone(cell))
     } else {
         None
@@ -66,10 +71,12 @@ fn rewrite_assign(map: &HoleMapping, assign: &mut ir::Assignment<Nothing>) {
 fn rewrite_assign(map: &HoleMapping, assign: &mut ir::Assignment<Nothing>) {
     if let Some(cell) = rewrite(map, &assign.dst) {
         assign.dst = cell.borrow().get("in");
+        assign.dst.borrow_mut().attributes = cell.borrow().attributes.clone();
     }
     if let Some(cell) = rewrite(map, &assign.src) {
     if let Some(cell) = rewrite(map, &assign.src) {
         assign.src = cell.borrow().get("out");
+        assign.src.borrow_mut().attributes = cell.borrow().attributes.clone();
     }
     assign.guard.for_each(&mut |port| {
         rewrite(map, &port)
@@ -146,6 +153,9 @@ impl Visitor for WireInliner {
         sigs: &LibrarySignatures,
         _comps: &[ir::Component],
     ) -> VisResult {
+        // trigger start of component FSM based on component's go signal
+        // trigger done of component based on FSM's done signal
+
         let control_ref = Rc::clone(&comp.control);
         let control = control_ref.borrow();
 
@@ -153,12 +163,10 @@ impl Visitor for WireInliner {
             ir::Control::Enable(..) | ir::Control::FSMEnable(..) => {
                 let this = Rc::clone(&comp.signature);
                 let mut builder = ir::Builder::new(comp, sigs);
-
                 let this_go_port = this
                     .borrow()
                     .find_unique_with_attr(ir::NumAttr::Go)?
                     .unwrap();
-
                 structure!(builder;
                     let one = constant(1, 1);
                 );
@@ -190,6 +198,7 @@ impl Visitor for WireInliner {
                 comp.continuous_assignments.extend(assigns);
             }
             ir::Control::Empty(_) => {}
+
             _ => {
                 return Err(calyx_utils::Error::malformed_control(format!(
                     "{}: Structure has more than one group",

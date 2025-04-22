@@ -5,13 +5,15 @@
 
 use crate::traits::Backend;
 use calyx_ir::{
-    self as ir, Assignment, Canonical, Control, FlatGuard, Group, Guard, GuardRef, Width, RRC
+    self as ir, Assignment, Canonical, Control, FlatGuard, Group, Guard,
+    GuardRef, RRC, Width,
 };
 use calyx_opt::passes::math_utilities::get_bit_width_from;
 use calyx_utils::{CalyxResult, Error, OutputFile};
 use ir::Nothing;
 use itertools::Itertools;
 use morty::{FileBundle, LibraryBundle};
+use std::collections::BTreeMap;
 use std::env;
 use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -397,6 +399,7 @@ impl Backend for VerilogBackend {
                 ctx.bc.synthesis_mode,
                 ctx.bc.enable_verification,
                 ctx.bc.flat_assign,
+                ctx.bc.onehot,
                 &mut temp_writer,
             );
             log::info!("Generated `{}` in {:?}", comp.name, time.elapsed());
@@ -550,7 +553,6 @@ fn emit_component<F: io::Write>(
         emit_fsm_module(fsm, comp.name, onehot, f)?;
     }
 
-
     writeln!(f, "module {}(", comp.name)?;
 
     let sig = comp.signature.borrow();
@@ -559,8 +561,11 @@ fn emit_component<F: io::Write>(
 
         let attr_str = format!(
             "(* {} *)",
-            port.attributes
-                .to_string_with(", ", |k, v| format!("{}={}", k, v))
+            port.attributes.to_string_with(
+                ", ",
+                |k, v| format!("{}={}", k, v),
+                |k, v| format!("{}={}", k, v.iter().join(", "))
+            )
         );
 
         // NOTE: The signature port definitions are reversed inside the component.
@@ -624,50 +629,55 @@ fn emit_component<F: io::Write>(
         .filter_map(|cell| Some((cell, cell_instance(&cell.borrow()))))
     {
         if let Some(ty) = cell.borrow().type_name() {
-            if ty == "std_wire"{
+            if ty == "std_wire" {
                 let src = cell.borrow().get("in");
                 let dst = cell.borrow().get("out");
-                writeln!(f, "assign {} = {};", VerilogPortRef(&dst), VerilogPortRef(&src))?;
+                writeln!(
+                    f,
+                    "assign {} = {};",
+                    VerilogPortRef(&dst),
+                    VerilogPortRef(&src)
+                )?;
             }
         }
         let attr_str = format!(
             "(* {} *)",
-            cell.borrow()
-                .attributes
-                .to_string_with(", ", |k, v| format!("{}={}", k, v))
+            cell.borrow().attributes.to_string_with(
+                ", ",
+                |k, v| format!("{}={}", k, v),
+                |k, v| format!("{}={}", k, v.iter().join(", "))
+            )
         );
-    
+
         if let Some(inst) = instance {
             writeln!(f, "{}\n{}\n", attr_str, inst)?;
         }
     }
     // Emit FSMs
-    for fsm in comp.fsms.iter() {
-        emit_fsm(fsm, comp.name, f)?;
-    }
+    emit_fsms(comp.fsms.iter().cloned().collect_vec(), comp.name, f)?;
 
     // gather assignments keyed by destination
     let mut map: BTreeMap<_, (RRC<ir::Port>, Vec<_>)> = BTreeMap::new();
     for asgn in &comp.continuous_assignments {
         map.entry(asgn.dst.borrow().canonical())
-        .and_modify(|(_, v)| v.push(asgn))
-        .or_insert((Rc::clone(&asgn.dst), vec![asgn]));
+            .and_modify(|(_, v)| v.push(asgn))
+            .or_insert((Rc::clone(&asgn.dst), vec![asgn]));
     }
 
     // Flatten all the guard expressions.
     let mut pool = ir::GuardPool::new();
     let grouped_asgns: Vec<_> = map
-    .values()
-    .sorted_by_key(|(port, _)| port.borrow().canonical())
-    .map(|(dst, asgns)| {
-        let flat_asgns: Vec<_> = asgns
-        .iter()
-        .map(|asgn| {
-                        let guard = pool.flatten(&asgn.guard);
-                        (asgn.src.clone(), guard)
-                    })
-                    .collect();
-                (dst, flat_asgns)
+        .values()
+        .sorted_by_key(|(port, _)| port.borrow().canonical())
+        .map(|(dst, asgns)| {
+            let flat_asgns: Vec<_> = asgns
+                .iter()
+                .map(|asgn| {
+                    let guard = pool.flatten(&asgn.guard);
+                    (asgn.src.clone(), guard)
+                })
+                .collect();
+            (dst, flat_asgns)
         })
         .collect();
 
@@ -746,7 +756,6 @@ fn wire_decls(cell: &ir::Cell) -> Vec<(String, u64, ir::Direction)> {
             }
             ir::PortParent::Group(_) => unreachable!(),
             ir::PortParent::FSM(_) => todo!(),
-            ir::PortParent::FSM(_) => todo!(),
             ir::PortParent::StaticGroup(_) => unreachable!(),
         })
         .collect()
@@ -755,7 +764,7 @@ fn wire_decls(cell: &ir::Cell) -> Vec<(String, u64, ir::Direction)> {
 fn cell_instance(cell: &ir::Cell) -> Option<v::Instance> {
     match cell.type_name() {
         Some(ty_name) => {
-            if ty_name == "std_wire"{
+            if ty_name == "std_wire" {
                 return None;
             }
 
@@ -817,6 +826,7 @@ fn init_fsm<F: io::Write>(
     f: &mut F,
 ) -> io::Result<()> {
     // Initialize wires representing FSM internal state
+    let fsm_name = fsm.borrow().name().to_string();
     let num_states = fsm.borrow().assignments.len();
     let fsm_state_wires = (0..num_states)
         .map(|st| format!("{}_s{st}_out", fsm.borrow().name()))
@@ -934,14 +944,17 @@ fn emit_fsm_module<F: io::Write>(
     writeln!(f, "  input logic clk,")?;
     writeln!(f, "  input logic reset,")?;
 
-    
-    let mut fsm_guarded_port: BTreeMap<String, BTreeMap<usize, Assignment<Nothing>>> = BTreeMap::new();
+    let mut unique_go_ports: BTreeMap<
+        String,
+        BTreeMap<usize, Assignment<Nothing>>,
+    > = BTreeMap::new();
     for assigns in fsm.borrow().merge_assignments().iter() {
         let dst = &assigns[0].1.dst;
-        if is_go_port(dst) || is_done_port(dst) || !is_data_port(dst) {
+        if is_go_port(dst) || is_done_port(dst) {
             let assigns_at_time: BTreeMap<usize, Assignment<Nothing>> =
                 BTreeMap::from_iter(assigns.iter().cloned());
-            fsm_guarded_port.insert(VerilogPortRef(dst).to_string(), assigns_at_time);
+            unique_go_ports
+                .insert(VerilogPortRef(dst).to_string(), assigns_at_time);
         }
     }
 
@@ -951,37 +964,29 @@ fn emit_fsm_module<F: io::Write>(
     for assign in fsm.borrow().merge_assignments().iter() {
         let dst = &assign[0].1.dst;
         if used_port_names.insert(VerilogPortRef(dst).to_string()) {
-            port_list.push(format!("  output logic [{}:0] {}", dst.borrow().width-1, VerilogPortRef(dst)));
+            port_list.push(format!(
+                "  output logic [{}:0] {}",
+                dst.borrow().width - 1,
+                VerilogPortRef(dst)
+            ));
         }
     }
 
-    for assigns in  fsm.borrow().merge_assignments().iter(){
-        for (_, assign) in assigns{
-            let src = &assign.src;
+    for assigns in fsm.borrow().merge_assignments().iter() {
+        for assign in assigns {
+            let src = &assign.1.src;
             if src.borrow().is_constant() {
                 continue;
             }
             if used_port_names.insert(src.borrow().canonical().to_string()) {
-                port_list
-                    .push(format!("  input logic [{}:0] {}", src.borrow().width-1,  VerilogPortRef(&src)));
-            }
-
-            for g in assign.guard.all_ports().iter() {
-                if used_port_names
-                    .insert(g.borrow().canonical().to_string())
-                {
-                    if g.borrow().is_constant() {
-                        continue;
-                    }
-                    port_list.push(format!(
-                        "  input logic {}",
-                        VerilogPortRef(g)
-                    ));
-                }
+                port_list.push(format!(
+                    "  input logic [{}:0] {}",
+                    src.borrow().width - 1,
+                    VerilogPortRef(&src)
+                ));
             }
         }
     }
-
 
     for transition in fsm.borrow().transitions.iter() {
         if let ir::Transition::Conditional(guards) = transition {
@@ -1002,6 +1007,13 @@ fn emit_fsm_module<F: io::Write>(
             }
         }
     }
+
+    // for i in 0..fsm.borrow().assignments.len() {
+    //     let port_name = format!("{}_s{i}_out", fsm.borrow().name());
+    //     if used_port_names.insert(port_name.clone()) {
+    //         port_list.push(format!("  output logic {}", port_name));
+    //     }
+    // }
 
     writeln!(f, "{}", port_list.join(",\n"))?;
     writeln!(f, ");\n")?;
@@ -1057,11 +1069,10 @@ fn emit_fsm_module<F: io::Write>(
     // At each state, write the updates to the state and the outward-facing
     // wires to make high / low
 
-
     for (case, trans) in fsm.borrow().transitions.iter().enumerate() {
         writeln!(f, "        S{case}: begin")?;
 
-        for (dst, assigns) in fsm_guarded_port.iter() {
+        for (dst, assigns) in unique_go_ports.iter() {
             if let Some(assign) = assigns.get(&case) {
                 writeln!(
                     f,
@@ -1082,7 +1093,7 @@ fn emit_fsm_module<F: io::Write>(
 
     writeln!(f, "      default begin")?;
 
-    for k in fsm_guarded_port.keys() {
+    for k in unique_go_ports.keys() {
         writeln!(f, "          {} = 'b0;", k)?;
     }
 
@@ -1094,10 +1105,10 @@ fn emit_fsm_module<F: io::Write>(
 
     for collection in fsm.borrow().merge_assignments().iter() {
         let dst_ref = &collection.first().unwrap().1.dst;
-        if fsm_guarded_port.contains_key(&VerilogPortRef(dst_ref).to_string()) {
+        if is_go_port(dst_ref) || is_done_port(dst_ref) {
             continue;
         }
-        
+
         // Check if all assignments to this destination have the same source
         let all_same_src = collection.iter().skip(1).all(|(_, assign)| {
             let first_src = collection[0].1.src.borrow().canonical();
@@ -1107,9 +1118,12 @@ fn emit_fsm_module<F: io::Write>(
 
         // If all sources are the same, we can simplify the assignment
         if all_same_src && collection.len() > 0 {
-            writeln!(f, "assign {} = {};", 
-                     VerilogPortRef(dst_ref), 
-                     VerilogPortRef(&collection[0].1.src))?;
+            writeln!(
+                f,
+                "assign {} = {};",
+                VerilogPortRef(dst_ref),
+                VerilogPortRef(&collection[0].1.src)
+            )?;
             continue;
         }
 
@@ -1423,7 +1437,6 @@ fn port_to_ref(port_ref: &RRC<ir::Port>) -> v::Expr {
         }
         ir::PortParent::Group(_) => unreachable!(),
         ir::PortParent::FSM(_) => todo!(),
-        ir::PortParent::FSM(_) => todo!(),
         ir::PortParent::StaticGroup(_) => unreachable!(),
     }
 }
@@ -1498,7 +1511,6 @@ impl std::fmt::Display for VerilogPortRef<'_> {
                 }
             }
             ir::PortParent::Group(_) => unreachable!(),
-            ir::PortParent::FSM(_) => todo!(),
             ir::PortParent::FSM(_) => todo!(),
             ir::PortParent::StaticGroup(_) => unreachable!(),
         }

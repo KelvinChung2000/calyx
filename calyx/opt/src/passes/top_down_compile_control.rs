@@ -304,6 +304,7 @@ struct Schedule<'b, 'a: 'b> {
 enum ProfilingInfo {
     Fsm(FSMInfo),
     Par(ParInfo),
+    Par(ParInfo),
     SingleEnable(SingleEnableInfo),
 }
 
@@ -315,6 +316,23 @@ struct SingleEnableInfo {
     pub component: Id,
     #[serde(serialize_with = "id_serialize_passthrough")]
     pub group: Id,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Serialize)]
+struct ParInfo {
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub component: Id,
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub par_group: Id,
+    pub child_groups: Vec<ParChildInfo>,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Serialize)]
+struct ParChildInfo {
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub group: Id,
+    #[serde(serialize_with = "id_serialize_passthrough")]
+    pub register: Id,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Serialize)]
@@ -1287,11 +1305,7 @@ pub struct TopDownCompileControl {
     /// Enable early transitions
     early_transitions: bool,
     /// Bookkeeping for FSM ids for groups across all FSMs in the program
-    fsm_groups: HashSet<ProfilingInfo>,
-    /// Decides whether FSMs are emitted as normal (inlined) or such that synthesis tool infers + optimizes FSM
-    infer_fsms: bool,
-    /// Decides whether FSMs are emitted as normal (inlined) or such that synthesis tool infers + optimizes FSM
-    infer_fsms: bool,
+    profiling_info: HashSet<ProfilingInfo>,
     /// Decides whether FSMs are emitted as normal (inlined) or such that synthesis tool infers + optimizes FSM
     infer_fsms: bool,
     /// How many states the dynamic FSM must have before picking binary over one-hot
@@ -1341,9 +1355,7 @@ impl ConstructVisitor for TopDownCompileControl {
             dump_fsm: opts[&"dump-fsm"].bool(),
             dump_fsm_json: opts[&"dump-fsm-json"].not_null_outstream(),
             early_transitions: opts[&"early-transitions"].bool(),
-            fsm_groups: HashSet::new(),
-            infer_fsms: opts[&"infer-fsms"].bool(),
-            infer_fsms: opts[&"infer-fsms"].bool(),
+            profiling_info: HashSet::new(),
             infer_fsms: opts[&"infer-fsms"].bool(),
             one_hot_cutoff: opts[&"one-hot-cutoff"]
                 .pos_num()
@@ -1448,7 +1460,7 @@ impl Visitor for TopDownCompileControl {
                 if let Some(enable_info) =
                     extract_single_enable(&mut con, comp.name)
                 {
-                    self.fsm_groups
+                    self.profiling_info
                         .insert(ProfilingInfo::SingleEnable(enable_info));
                 }
                 Ok(Action::Stop)
@@ -1484,7 +1496,7 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &s.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
@@ -1496,29 +1508,11 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &s.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
 
-        // Add NODE_ID to compiled enable.
-        let state_id = s.attributes.get(NODE_ID).unwrap();
-        seq_enable.get_mut_attributes().insert(NODE_ID, state_id);
-        // compile schedule and return the enable node
-        let mut seq_enable = if self.infer_fsms {
-            ir::Control::fsm_enable(sch.realize_fsm(self.dump_fsm))
-        } else {
-            let fsm_impl = self.get_representation(&sch, &s.attributes);
-            ir::Control::enable(sch.realize_schedule(
-                self.dump_fsm,
-                &mut self.fsm_groups,
-                fsm_impl,
-            ))
-        };
-
-        // Add NODE_ID to compiled enable.
-        let state_id = s.attributes.get(NODE_ID).unwrap();
-        seq_enable.get_mut_attributes().insert(NODE_ID, state_id);
         // Add NODE_ID to compiled enable.
         let state_id = s.attributes.get(NODE_ID).unwrap();
         seq_enable.get_mut_attributes().insert(NODE_ID, state_id);
@@ -1550,7 +1544,7 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &i.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
@@ -1574,7 +1568,7 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &i.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
@@ -1610,7 +1604,7 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &w.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
@@ -1622,25 +1616,11 @@ impl Visitor for TopDownCompileControl {
             let fsm_impl = self.get_representation(&sch, &w.attributes);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_impl,
             ))
         };
 
-        // Add NODE_ID to compiled enable.
-        // compile schedule and return the enable node
-        let mut while_enable = if self.infer_fsms {
-            ir::Control::fsm_enable(sch.realize_fsm(self.dump_fsm))
-        } else {
-            let fsm_impl = self.get_representation(&sch, &w.attributes);
-            ir::Control::enable(sch.realize_schedule(
-                self.dump_fsm,
-                &mut self.fsm_groups,
-                fsm_impl,
-            ))
-        };
-
-        // Add NODE_ID to compiled enable.
         // Add NODE_ID to compiled enable.
         let node_id = w.attributes.get(NODE_ID).unwrap();
         while_enable.get_mut_attributes().insert(NODE_ID, node_id);
@@ -1673,7 +1653,7 @@ impl Visitor for TopDownCompileControl {
         let mut done_regs = Vec::with_capacity(s.stmts.len());
 
         // Profiling: record each par child (arm)'s group and done register
-        let mut child_infos = Vec::with_capacity(s.stmts.len());
+        let child_infos = Vec::with_capacity(s.stmts.len());
 
         // For each child, build the enabling logic.
         for con in &s.stmts {
@@ -1702,12 +1682,12 @@ impl Visitor for TopDownCompileControl {
                 let group = match con {
                     // Do not compile enables
                     ir::Control::Enable(ir::Enable { group, .. }) => {
-                        self.fsm_groups.insert(ProfilingInfo::SingleEnable(
-                            SingleEnableInfo {
+                        self.profiling_info.insert(
+                            ProfilingInfo::SingleEnable(SingleEnableInfo {
                                 group: group.borrow().name(),
                                 component: builder.component.name,
-                            },
-                        ));
+                            }),
+                        );
                         Rc::clone(group)
                     }
                     // Compile complex schedule and return the group.
@@ -1718,7 +1698,7 @@ impl Visitor for TopDownCompileControl {
                             self.get_representation(&sch, &s.attributes);
                         sch.realize_schedule(
                             self.dump_fsm,
-                            &mut self.fsm_groups,
+                            &mut self.profiling_info,
                             fsm_impl,
                         )
                     }
@@ -1736,8 +1716,9 @@ impl Visitor for TopDownCompileControl {
                 assigns
             };
 
-            par_group.borrow_mut().assignments.extend(assigns);
-            done_regs.push(pd)
+                par_group.borrow_mut().assignments.extend(assigns);
+                done_regs.push(pd)
+            };
         }
         // Profiling: save collected information about this par
         self.profiling_info.insert(ProfilingInfo::Par(ParInfo {
@@ -1805,7 +1786,7 @@ impl Visitor for TopDownCompileControl {
             let fsm_rep = self.get_representation(&sch, &attrs);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_rep,
             ))
         };
@@ -1816,24 +1797,11 @@ impl Visitor for TopDownCompileControl {
             let fsm_rep = self.get_representation(&sch, &attrs);
             ir::Control::enable(sch.realize_schedule(
                 self.dump_fsm,
-                &mut self.fsm_groups,
+                &mut self.profiling_info,
                 fsm_rep,
             ))
         };
 
-        Ok(Action::change(control_node))
-        let control_node = if self.infer_fsms {
-            ir::Control::fsm_enable(sch.realize_fsm(self.dump_fsm))
-        } else {
-            let fsm_rep = self.get_representation(&sch, &attrs);
-            ir::Control::enable(sch.realize_schedule(
-                self.dump_fsm,
-                &mut self.fsm_groups,
-                fsm_rep,
-            ))
-        };
-
-        Ok(Action::change(control_node))
         Ok(Action::change(control_node))
     }
 
@@ -1842,6 +1810,7 @@ impl Visitor for TopDownCompileControl {
         if let Some(json_out_file) = &mut self.dump_fsm_json {
             let _ = serde_json::to_writer_pretty(
                 json_out_file.get_write(),
+                &self.profiling_info,
                 &self.profiling_info,
             );
         }

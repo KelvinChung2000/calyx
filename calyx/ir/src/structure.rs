@@ -2,18 +2,14 @@
 
 use crate::guard::StaticTiming;
 use crate::Nothing;
-use crate::guard::StaticTiming;
-
 use super::{
     Attributes, Direction, GetAttributes, Guard, Id, PortDef, RRC, WRC,
 };
 use calyx_frontend::{Attribute, BoolAttr};
 use calyx_utils::{CalyxResult, Error, GetName};
 use itertools::Itertools;
-use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use smallvec::{smallvec, SmallVec};
-use std::collections::HashMap;
 use std::fmt::{self};
 use std::hash::Hash;
 use std::rc::Rc;
@@ -24,7 +20,6 @@ pub enum PortParent {
     Cell(WRC<Cell>),
     Group(WRC<Group>),
     StaticGroup(WRC<StaticGroup>),
-    FSM(WRC<FSM>),
     FSM(WRC<FSM>),
 }
 
@@ -140,7 +135,6 @@ impl Port {
         match &self.parent {
             PortParent::Cell(cell) => cell.upgrade().borrow().name,
             PortParent::Group(group) => group.upgrade().borrow().name,
-            PortParent::FSM(fsm) => fsm.upgrade().borrow().name,
             PortParent::FSM(fsm) => fsm.upgrade().borrow().name,
             PortParent::StaticGroup(group) => group.upgrade().borrow().name,
         }
@@ -1111,8 +1105,3 @@ impl GetName for StaticGroup {
     }
 }
 
-impl GetName for FSM {
-    fn name(&self) -> Id {
-        self.name()
-    }
-}

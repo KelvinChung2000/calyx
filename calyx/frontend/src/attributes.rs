@@ -4,7 +4,7 @@ use calyx_utils::{CalyxResult, GPosIdx, WithPos};
 use itertools::Itertools;
 use linked_hash_map::LinkedHashMap;
 use smallvec::SmallVec;
-use std::{collections::HashMap, convert::TryFrom};
+use std::{collections::HashMap, convert::TryFrom, fmt};
 
 #[derive(Debug, Clone, Default)]
 /// Attribute information stored on the Heap
