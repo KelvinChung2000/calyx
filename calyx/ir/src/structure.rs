@@ -8,7 +8,7 @@ use super::{
 use calyx_frontend::{Attribute, BoolAttr};
 use calyx_utils::{CalyxResult, Error, GetName};
 use itertools::Itertools;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use smallvec::{smallvec, SmallVec};
 use std::fmt::{self};
 use std::hash::Hash;
@@ -1072,6 +1072,55 @@ impl FSM {
             // order by state, for better appearance when emitted
             .sorted_by(|a, b| a.first().unwrap().0.cmp(&b.first().unwrap().0))
             .collect()
+    }
+
+    pub fn get_module_interface(&self) -> Vec<Rc<std::cell::RefCell<Port>>> {
+        let mut interface: Vec<Rc<std::cell::RefCell<Port>>>  = vec![];
+
+        let mut used_ports = HashSet::new();
+        for assign in self.merge_assignments().iter(){
+            let dst = assign[0].1.dst.clone();
+            if used_ports.insert(dst.borrow().canonical()) {
+                interface.push(dst);
+            }
+        }
+
+        for assign in self.assignments.iter() {
+            for assign in assign.iter() {
+                let src = assign.src.clone();
+                let dst = assign.dst.clone();
+                if src.borrow().is_constant() {
+                    continue;
+                }
+                if used_ports.insert(dst.borrow().canonical()) {
+                    interface.push(dst);
+                }
+                if used_ports.insert(src.borrow().canonical()) {
+                    interface.push(src);
+                }
+                for port in assign.guard.all_ports() {
+                    let port = port.clone();
+                    if used_ports.insert(port.borrow().canonical()) {
+                        interface.push(port);
+                    }
+                }
+            }
+        }
+
+        for assign in self.transitions.iter() {
+            if let Transition::Conditional(conds) = assign {
+                for (guard, _) in conds.iter() {
+                    for port_rrc in guard.all_ports() {
+                        let port = port_rrc.clone();
+                        if used_ports.insert(port.borrow().canonical()) {
+                            interface.push(port);
+                        }
+                    }
+                }
+            }
+        }
+
+        interface
     }
 }
 

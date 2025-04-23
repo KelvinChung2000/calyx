@@ -5,8 +5,8 @@
 
 use crate::traits::Backend;
 use calyx_ir::{
-    self as ir, Assignment, Canonical, Control, FlatGuard, Group, Guard,
-    GuardRef, RRC, Width,
+    self as ir, Assignment, Control, FlatGuard, Group, Guard,
+    GuardRef, RRC,
 };
 use calyx_opt::passes::math_utilities::get_bit_width_from;
 use calyx_utils::{CalyxResult, Error, OutputFile};
@@ -654,7 +654,9 @@ fn emit_component<F: io::Write>(
         }
     }
     // Emit FSMs
-    emit_fsms(comp.fsms.iter().cloned().collect_vec(), comp.name, f)?;
+    for fsm in comp.fsms.iter(){
+        init_fsm(fsm, comp.name, f)?;
+    }
 
     // gather assignments keyed by destination
     let mut map: BTreeMap<_, (RRC<ir::Port>, Vec<_>)> = BTreeMap::new();
@@ -827,104 +829,21 @@ fn init_fsm<F: io::Write>(
 ) -> io::Result<()> {
     // Initialize wires representing FSM internal state
     let fsm_name = fsm.borrow().name().to_string();
-    let num_states = fsm.borrow().assignments.len();
-    let fsm_state_wires = (0..num_states)
-        .map(|st| format!("{}_s{st}_out", fsm.borrow().name()))
-        .collect_vec();
-
-    for state_wire in fsm_state_wires.iter() {
-        writeln!(f, "logic {state_wire};")?;
-    }
-
     writeln!(f, "{fsm_name}_{comp_name}_def {fsm_name} (")?;
-    for (case, st_wire) in fsm_state_wires.into_iter().enumerate() {
-        writeln!(f, "  .s{case}_out({st_wire}),")?;
+    writeln!(f, "  .clk(clk),")?;
+    writeln!(f, "  .reset(reset),")?;
+    let mut port_list: Vec<String> = vec![];
+
+    for port in fsm.borrow().get_module_interface().iter(){
+        port_list.push(format!(
+            "  .{}({})",
+            VerilogPortRef(port),
+            VerilogPortRef(port)
+        ));
     }
-    writeln!(f, "  .*")?;
+
+    writeln!(f, "{}", port_list.join(",\n"))?;
     writeln!(f, ");")?;
-
-    io::Result::Ok(())
-}
-
-fn emit_fsms<F: io::Write>(
-    fsms: Vec<RRC<ir::FSM>>,
-    comp_name: ir::Id,
-    f: &mut F,
-) -> io::Result<()> {
-    // generate fsm instantiations from fsm defs
-    for fsm in fsms.iter() {
-        init_fsm(fsm, comp_name, f)?;
-    }
-
-    // merge assignments across fsms, since multiple fsms can write to the same
-    // destination
-    let mut dest2mergedassigns: HashMap<
-        ir::Canonical,
-        Vec<(ir::Id, usize, ir::Assignment<Nothing>)>,
-    > = HashMap::new();
-    fsms.iter().for_each(|fsm: &RRC<ir::FSM>| {
-        fsm.borrow().merge_assignments().into_iter().for_each(
-            |collection: Vec<(usize, ir::Assignment<Nothing>)>| {
-                collection.into_iter().for_each(|(state, assignment)| {
-                    let assign_dest = assignment.dst.borrow().canonical();
-                    dest2mergedassigns
-                        .entry(assign_dest)
-                        .and_modify(|merged_assigns| {
-                            merged_assigns.push((
-                                fsm.borrow().name(),
-                                state,
-                                assignment.clone(),
-                            ));
-                        })
-                        .or_insert(vec![(
-                            fsm.borrow().name(),
-                            state,
-                            assignment,
-                        )]);
-                })
-            },
-        );
-    });
-
-    // dump all assignments dependent on fsm state
-    for collection in dest2mergedassigns.into_values() {
-        let num_merged_assigns = collection.len();
-        let destination = ir::RRC::clone(&collection.first().unwrap().2.dst);
-        writeln!(f, "assign {} =", VerilogPortRef(&destination))?;
-        for (i, (fsm_id, state, assignment)) in
-            collection.into_iter().enumerate()
-        {
-            // string representing the new guard on the assignment
-            let case_guard = format!("{}_s{state}_out", fsm_id);
-            let case_guarded_assign_guard = if assignment.guard.is_true() {
-                case_guard
-            } else {
-                format!(
-                    "({case_guard} & ({}))",
-                    unflattened_guard(&assignment.guard)
-                )
-            };
-
-            // value for the wire to take if either fsm is not in relevant state
-            // or if the assignment's original condition is not met
-            let guard_unmet_value = if is_data_port(&destination) {
-                "'x".to_string()
-            } else {
-                format!("{}'d0", destination.borrow().width)
-            };
-
-            writeln!(
-                f,
-                " {} ? {} :",
-                case_guarded_assign_guard,
-                VerilogPortRef(&assignment.src)
-            )?;
-
-            if i + 1 == num_merged_assigns {
-                writeln!(f, " {guard_unmet_value};")?;
-            }
-        }
-    }
 
     io::Result::Ok(())
 }
@@ -958,62 +877,24 @@ fn emit_fsm_module<F: io::Write>(
         }
     }
 
-    let mut used_port_names: HashSet<String> = HashSet::new();
     let mut port_list: Vec<String> = vec![];
 
-    for assign in fsm.borrow().merge_assignments().iter() {
-        let dst = &assign[0].1.dst;
-        if used_port_names.insert(VerilogPortRef(dst).to_string()) {
+    for port in fsm.borrow().get_module_interface().iter(){
+        if port.borrow().direction == ir::Direction::Output {
+            port_list.push(format!(
+                "  input logic [{}:0] {}",
+                port.borrow().width - 1,
+                VerilogPortRef(port)
+            ));
+        }
+        else{
             port_list.push(format!(
                 "  output logic [{}:0] {}",
-                dst.borrow().width - 1,
-                VerilogPortRef(dst)
+                port.borrow().width - 1,
+                VerilogPortRef(port)
             ));
         }
     }
-
-    for assigns in fsm.borrow().merge_assignments().iter() {
-        for assign in assigns {
-            let src = &assign.1.src;
-            if src.borrow().is_constant() {
-                continue;
-            }
-            if used_port_names.insert(src.borrow().canonical().to_string()) {
-                port_list.push(format!(
-                    "  input logic [{}:0] {}",
-                    src.borrow().width - 1,
-                    VerilogPortRef(&src)
-                ));
-            }
-        }
-    }
-
-    for transition in fsm.borrow().transitions.iter() {
-        if let ir::Transition::Conditional(guards) = transition {
-            for (guard, _) in guards.iter() {
-                for port in guard.all_ports().iter() {
-                    if used_port_names
-                        .insert(port.borrow().canonical().to_string())
-                    {
-                        if port.borrow().is_constant() {
-                            continue;
-                        }
-                        port_list.push(format!(
-                            "  input logic {}",
-                            VerilogPortRef(port)
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    // for i in 0..fsm.borrow().assignments.len() {
-    //     let port_name = format!("{}_s{i}_out", fsm.borrow().name());
-    //     if used_port_names.insert(port_name.clone()) {
-    //         port_list.push(format!("  output logic {}", port_name));
-    //     }
-    // }
 
     writeln!(f, "{}", port_list.join(",\n"))?;
     writeln!(f, ");\n")?;
@@ -1086,7 +967,7 @@ fn emit_fsm_module<F: io::Write>(
         }
 
         // Updates to state
-        emit_fsm_transtions(trans, f)?;
+        emit_fsm_transitions(trans, f)?;
 
         writeln!(f, "        end")?;
     }
@@ -1156,7 +1037,7 @@ fn emit_fsm_module<F: io::Write>(
     io::Result::Ok(())
 }
 
-fn emit_fsm_transtions<F: io::Write>(
+fn emit_fsm_transitions<F: io::Write>(
     trans: &ir::Transition,
     f: &mut F,
 ) -> io::Result<()> {
