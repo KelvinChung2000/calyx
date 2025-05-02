@@ -4,8 +4,8 @@ use crate::{Cell, Context, Control, IdList, PortParent, RRC};
 use calyx_utils::GetName;
 #[cfg(feature = "serialize")]
 use serde::{
-    ser::{SerializeSeq, SerializeStruct},
     Serialize, Serializer,
+    ser::{SerializeSeq, SerializeStruct},
 };
 #[cfg(feature = "serialize")]
 use serde_with::SerializeAs;
@@ -77,6 +77,9 @@ impl Serialize for PortParent {
             }
             PortParent::Group(weak_group_ref) => {
                 weak_group_ref.upgrade().borrow().name().serialize(ser)
+            }
+            PortParent::FSM(wref_fsm) => {
+                wref_fsm.upgrade().borrow().name().serialize(ser)
             }
             PortParent::StaticGroup(weak_sgroup_ref) => {
                 weak_sgroup_ref.upgrade().borrow().name().serialize(ser)

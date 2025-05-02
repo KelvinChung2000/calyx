@@ -160,18 +160,12 @@ impl MlirBackend {
                     .map(|(k, v)| (k.as_ref(), *v))
                     .collect();
                 match name.as_ref() {
-                    "undef" => {
-                        write!(f, "calyx.undefined @{cell_name}")?
-                    }
-                    "std_reg" => {
-                        write!(f, "calyx.register @{cell_name}")?
-                    }
+                    "undef" => write!(f, "calyx.undefined @{cell_name}")?,
+                    "std_reg" => write!(f, "calyx.register @{cell_name}")?,
                     "comb_mem_d1" => write!(
                         f,
                         "calyx.memory @{cell_name} <[{}] x {}> [{}]",
-                        bind["SIZE"],
-                        bind["WIDTH"],
-                        bind["IDX_SIZE"]
+                        bind["SIZE"], bind["WIDTH"], bind["IDX_SIZE"]
                     )?,
                     "comb_mem_d2" => write!(
                         f,
@@ -276,7 +270,10 @@ impl MlirBackend {
         } else if matches!(&*assign.guard, ir::Guard::True) {
             /* Print nothing */
         } else {
-            panic!("Failed to compile guard: {}.\nFirst run the `lower-guards` pass. If you did, report this as an issue.", ir::Printer::guard_str(&assign.guard));
+            panic!(
+                "Failed to compile guard: {}.\nFirst run the `lower-guards` pass. If you did, report this as an issue.",
+                ir::Printer::guard_str(&assign.guard)
+            );
         }
         write!(f, "{}", Self::get_port_access(&assign.src.borrow()),)?;
         write!(f, " : i{}", assign.src.borrow().width)
@@ -399,6 +396,7 @@ impl MlirBackend {
                 Self::write_control(body, indent_level + 2, f)?;
                 write!(f, "{}}}", " ".repeat(indent_level))
             }
+            ir::Control::FSMEnable(_) => todo!(),
             ir::Control::Empty(_) => writeln!(f),
         }?;
         let attr = control.get_attributes();
@@ -422,6 +420,7 @@ impl MlirBackend {
                     _ => format!("%{}.{}", cell.name().id, port.name.id),
                 }
             }
+            ir::PortParent::FSM(_) => unimplemented!(),
             ir::PortParent::Group(_) => unimplemented!(),
             ir::PortParent::StaticGroup(_) => unimplemented!(),
         }

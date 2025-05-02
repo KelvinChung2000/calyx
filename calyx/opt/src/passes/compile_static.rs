@@ -5,10 +5,10 @@ use crate::traversal::{
     Action, ConstructVisitor, Named, ParseVal, PassOpt, VisResult, Visitor,
 };
 use calyx_ir::{self as ir, Nothing, PortParent};
-use calyx_ir::{guard, structure, GetAttributes};
+use calyx_ir::{GetAttributes, guard, structure};
 use calyx_utils::{CalyxResult, Error};
 use core::panic;
-use ir::{build_assignments, RRC};
+use ir::{RRC, build_assignments};
 use itertools::Itertools;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Not;
@@ -231,7 +231,10 @@ impl CompileStatic {
         // assume that there are only static enables left.
         // if there are any other type of static control, then error out.
         let ir::StaticControl::Enable(s) = sc else {
-            unreachable!("Non-Enable Static Control should have been compiled away. Run {} to do this", crate::passes::StaticInliner::name());
+            unreachable!(
+                "Non-Enable Static Control should have been compiled away. Run {} to do this",
+                crate::passes::StaticInliner::name()
+            );
         };
 
         let sgroup = s.group.borrow_mut();
@@ -349,6 +352,9 @@ impl CompileStatic {
                 for stmt in &par.stmts {
                     Self::add_par_conflicts(stmt, fsm_trees, conflict_graph);
                 }
+            }
+            ir::Control::FSMEnable(_) => {
+                todo!("should not encounter fsm nodes")
             }
         }
     }
@@ -509,9 +515,10 @@ impl CompileStatic {
                 } else {
                     (beg1, end1)
                 }
-
             }
-            ir::Guard::Or(_, _) => unreachable!("Shouldn't try to get interval from guard if there is an 'or' in the guard"),
+            ir::Guard::Or(_, _) => unreachable!(
+                "Shouldn't try to get interval from guard if there is an 'or' in the guard"
+            ),
         }
     }
 
@@ -598,7 +605,7 @@ impl CompileStatic {
                         panic!("")
                     }
                 }
-                PortParent::Group(_) => panic!(""),
+                PortParent::Group(_) | PortParent::FSM(_) => panic!(""),
                 PortParent::StaticGroup(sgroup) => {
                     assert!(assign.src.borrow().is_constant(1, 1));
                     let (beg, end) = Self::get_interval_from_guard(
@@ -691,7 +698,7 @@ impl CompileStatic {
             // Looking for static_child[go] = %[i:j] ? 1'd1; to build children.
             match &assign.dst.borrow().parent {
                 PortParent::Cell(_) => (),
-                PortParent::Group(_) => unreachable!(""),
+                PortParent::Group(_) | PortParent::FSM(_) => unreachable!(""),
                 PortParent::StaticGroup(sgroup) => {
                     assert!(assign.src.borrow().is_constant(1, 1));
                     let (beg, end) = Self::get_interval_from_guard(
@@ -807,9 +814,15 @@ impl CompileStatic {
             }
             ir::Control::Static(sc) => {
                 let ir::StaticControl::Enable(s) = sc else {
-                    unreachable!("Non-Enable Static Control should have been compiled away. Run {} to do this", crate::passes::StaticInliner::name());
+                    unreachable!(
+                        "Non-Enable Static Control should have been compiled away. Run {} to do this",
+                        crate::passes::StaticInliner::name()
+                    );
                 };
                 vec![s.group.borrow().name()]
+            }
+            ir::Control::FSMEnable(_) => {
+                todo!("should not encounter fsm nodes")
             }
         }
     }
@@ -826,32 +839,45 @@ impl CompileStatic {
         comp_sig: RRC<ir::Cell>,
     ) -> ir::Guard<ir::Nothing> {
         match guard {
-        ir::Guard::Or(l, r) => {
-            let left =
-                Self::make_guard_dyn_one_cycle_static_comp(*l, Rc::clone(&comp_sig));
-            let right = Self::make_guard_dyn_one_cycle_static_comp(*r, Rc::clone(&comp_sig));
-            ir::Guard::or(left, right)
-        }
-        ir::Guard::And(l, r) => {
-            let left = Self::make_guard_dyn_one_cycle_static_comp(*l, Rc::clone(&comp_sig));
-            let right = Self::make_guard_dyn_one_cycle_static_comp(*r, Rc::clone(&comp_sig));
-            ir::Guard::and(left, right)
-        }
-        ir::Guard::Not(g) => {
-            let f = Self::make_guard_dyn_one_cycle_static_comp(*g, Rc::clone(&comp_sig));
-            ir::Guard::Not(Box::new(f))
-        }
-        ir::Guard::Info(t) => {
-            match t.get_interval() {
-                (0, 1) => guard!(comp_sig["go"]),
-                _ => unreachable!("This function is implemented for 1 cycle static components, only %0 can exist as timing guard"),
-
+            ir::Guard::Or(l, r) => {
+                let left = Self::make_guard_dyn_one_cycle_static_comp(
+                    *l,
+                    Rc::clone(&comp_sig),
+                );
+                let right = Self::make_guard_dyn_one_cycle_static_comp(
+                    *r,
+                    Rc::clone(&comp_sig),
+                );
+                ir::Guard::or(left, right)
             }
+            ir::Guard::And(l, r) => {
+                let left = Self::make_guard_dyn_one_cycle_static_comp(
+                    *l,
+                    Rc::clone(&comp_sig),
+                );
+                let right = Self::make_guard_dyn_one_cycle_static_comp(
+                    *r,
+                    Rc::clone(&comp_sig),
+                );
+                ir::Guard::and(left, right)
+            }
+            ir::Guard::Not(g) => {
+                let f = Self::make_guard_dyn_one_cycle_static_comp(
+                    *g,
+                    Rc::clone(&comp_sig),
+                );
+                ir::Guard::Not(Box::new(f))
+            }
+            ir::Guard::Info(t) => match t.get_interval() {
+                (0, 1) => guard!(comp_sig["go"]),
+                _ => unreachable!(
+                    "This function is implemented for 1 cycle static components, only %0 can exist as timing guard"
+                ),
+            },
+            ir::Guard::CompOp(op, l, r) => ir::Guard::CompOp(op, l, r),
+            ir::Guard::Port(p) => ir::Guard::Port(p),
+            ir::Guard::True => ir::Guard::True,
         }
-        ir::Guard::CompOp(op, l, r) => ir::Guard::CompOp(op, l, r),
-        ir::Guard::Port(p) => ir::Guard::Port(p),
-        ir::Guard::True => ir::Guard::True,
-    }
     }
 
     // Used for assignments in a one cycle static component.
@@ -998,6 +1024,7 @@ impl CompileStatic {
                         // Don't add assignment to `group[done]`
                         PortParent::Group(_) => dst.name != "done",
                         PortParent::StaticGroup(_) => true,
+                        PortParent::FSM(_) => unreachable!(),
                     }
                 }),
             );
@@ -1145,7 +1172,12 @@ impl Visitor for CompileStatic {
                 ir::Control::Static(ir::StaticControl::Enable(sen)) => {
                     Some(sen.group.borrow().name())
                 }
-                _ => return Err(Error::malformed_control(format!("Non-Enable Static Control should have been compiled away. Run {} to do this", crate::passes::StaticInliner::name()))),
+                _ => {
+                    return Err(Error::malformed_control(format!(
+                        "Non-Enable Static Control should have been compiled away. Run {} to do this",
+                        crate::passes::StaticInliner::name()
+                    )));
+                }
             }
         } else {
             None
@@ -1228,7 +1260,10 @@ impl Visitor for CompileStatic {
         // Assume that there are only static enables left.
         // If there are any other type of static control, then error out.
         let ir::StaticControl::Enable(s) = sc else {
-            return Err(Error::malformed_control(format!("Non-Enable Static Control should have been compiled away. Run {} to do this", crate::passes::StaticInliner::name())));
+            return Err(Error::malformed_control(format!(
+                "Non-Enable Static Control should have been compiled away. Run {} to do this",
+                crate::passes::StaticInliner::name()
+            )));
         };
 
         let sgroup = s.group.borrow_mut();

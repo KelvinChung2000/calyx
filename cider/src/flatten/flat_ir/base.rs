@@ -9,7 +9,7 @@ use crate::{
     serialization::PrintCode,
 };
 use baa::{BitVecOps, BitVecValue};
-use cider_idx::{impl_index, impl_index_nonzero, iter::IndexRange, IndexRef};
+use cider_idx::{IndexRef, impl_index, impl_index_nonzero, iter::IndexRange};
 use std::collections::HashSet;
 
 // making these all u32 for now, can give the macro an optional type as the
@@ -437,12 +437,13 @@ pub struct AssignedValue {
 }
 
 impl AssignedValue {
+    #[inline]
     pub fn eq_no_transitive_clocks(&self, other: &Self) -> bool {
-        self.val == other.val
+        self.propagate_clocks == other.propagate_clocks
             && self.winner == other.winner
             && self.thread == other.thread
             && self.clocks == other.clocks
-            && self.propagate_clocks == other.propagate_clocks
+            && self.val == other.val
     }
 }
 

@@ -11,8 +11,12 @@ ACTIVE_CELL_COLOR = "pink"
 ACTIVE_GROUP_COLOR = "mediumspringgreen"
 ACTIVE_PRIMITIVE_COLOR = "orange"
 TREE_PICTURE_LIMIT = 300
-SCALED_FLAME_MULTIPLIER = 1000  # multiplier so scaled flame graph will not round up.
-ts_multiplier = 1  # ms on perfetto UI that resembles a single cycle
+SCALED_FLAME_MULTIPLIER = (
+    1000  # [flame graph] multiplier so scaled flame graph will not round up.
+)
+ts_multiplier = 1  # [timeline view] ms on perfetto UI that resembles a single cycle
+JSON_INDENT = "    "  # [timeline view] indentation for generating JSON on the fly
+num_timeline_events = 0  # [timeline view] recording how many events have happened
 
 
 def remove_size_from_name(name: str) -> str:
@@ -104,13 +108,26 @@ def create_cycle_trace(
 
 
 class VCDConverter(vcdvcd.StreamParserCallbacks):
-    def __init__(self, main_component, cells_to_components):
+    def __init__(
+        self,
+        main_component,
+        cells_to_components,
+        fsms,
+        fsm_events,
+        par_groups,
+        par_done_regs,
+    ):
         super().__init__()
-        self.main_component = main_component
+        self.main_shortname = main_component
         self.cells_to_components = cells_to_components
-        # Documenting other fields for reference
-        # signal_id_to_names
-        self.timestamps_to_events = {}
+        self.timestamps_to_events = {}  # timestamps to
+        self.timestamps_to_clock_cycles = {}
+        self.timestamps_to_control_reg_changes = {}
+        self.timestamps_to_control_group_events = {}
+        self.fsms = fsms
+        self.partial_fsm_events = fsm_events
+        self.par_done_regs = par_done_regs
+        self.par_groups = par_groups
 
     def enddefinitions(self, vcd, signals, cur_sig_vals):
         # convert references to list and sort by name
@@ -120,15 +137,32 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
         signal_id_dict = {
             sid: [] for sid in vcd.references_to_ids.values()
         }  # one id can map to multiple signal names since wires are connected
+        tdcc_signal_id_to_names = {
+            sid: [] for sid in vcd.references_to_ids.values()
+        }  # same as signal_id_dict, but just the registers that manage control (fsm, pd)
+        control_signal_id_to_names = {
+            sid: [] for sid in vcd.references_to_ids.values()
+        }  # same as signal_id_dict, but just groups that manage control (only par for now, can also consider tdcc)
 
-        clock_name = f"{self.main_component}.clk"
-        if clock_name not in names:
+        clock_filter = list(
+            filter(lambda x: x.endswith(f"{self.main_shortname}.clk"), names)
+        )
+        if len(clock_filter) > 1:
+            print(f"Found multiple clocks: {clock_filter} Exiting...")
+            sys.exit(1)
+        elif len(clock_filter) == 0:
             print("Can't find the clock? Exiting...")
             sys.exit(1)
+        clock_name = clock_filter[0]
+        # Depending on the simulator + OS, we may get different prefixes before the name
+        # of the main component.
+        self.signal_prefix = clock_name.split(f".{self.main_shortname}")[0]
+        self.main_component = f"{self.signal_prefix}.{self.main_shortname}"
         signal_id_dict[vcd.references_to_ids[clock_name]] = [clock_name]
 
         # get go and done for cells (the signals are exactly {cell}.go and {cell}.done)
-        for cell in self.cells_to_components.keys():
+        for cell_suffix in list(self.cells_to_components.keys()):
+            cell = f"{self.signal_prefix}.{cell_suffix}"
             cell_go = cell + ".go"
             cell_done = cell + ".done"
             if cell_go not in vcd.references_to_ids:
@@ -136,40 +170,183 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
                 continue
             signal_id_dict[vcd.references_to_ids[cell_go]].append(cell_go)
             signal_id_dict[vcd.references_to_ids[cell_done]].append(cell_done)
+            # replace the old key (cell_suffix) with the fully qualified cell name
+            self.cells_to_components[cell] = self.cells_to_components[cell_suffix]
+            del self.cells_to_components[cell_suffix]
+        # update fsms, par done registers, par groups with fully qualified names
+        self.fsms = {f"{self.signal_prefix}.{fsm}" for fsm in self.fsms}
+        self.partial_fsm_events = {
+            f"{self.signal_prefix}.{fsm}": self.partial_fsm_events[fsm]
+            for fsm in self.partial_fsm_events
+        }
+        self.par_done_regs = {f"{self.signal_prefix}.{pd}" for pd in self.par_done_regs}
+        self.par_groups = {
+            f"{self.signal_prefix}.{par_group}" for par_group in self.par_groups
+        }
 
         for name, sid in refs:
             if "probe_out" in name:
                 signal_id_dict[sid].append(name)
+            for fsm in self.fsms:
+                if name.startswith(f"{fsm}.out["):
+                    signal_id_dict[sid].append(name)
+                if name.startswith(f"{fsm}.write_en") or name.startswith(f"{fsm}.in"):
+                    tdcc_signal_id_to_names[sid].append(name)
+            for par_done_reg in self.par_done_regs:
+                if (
+                    name.startswith(f"{par_done_reg}.in")
+                    or name == f"{par_done_reg}.write_en"
+                ):
+                    tdcc_signal_id_to_names[sid].append(name)
+            for par_group_name in self.par_groups:
+                if name == f"{par_group_name}_go_out":
+                    control_signal_id_to_names[sid].append(name)
+        del self.par_groups
 
         # don't need to check for signal ids that don't pertain to signals we're interested in
         self.signal_id_to_names = {
             k: v for k, v in signal_id_dict.items() if len(v) > 0
         }
+        self.tdcc_signal_id_to_names = {
+            k: v for k, v in tdcc_signal_id_to_names.items() if len(v) > 0
+        }
+        self.control_signal_id_to_names = {
+            k: v for k, v in control_signal_id_to_names.items() if len(v) > 0
+        }
 
     def value(self, vcd, time, value, identifier_code, cur_sig_vals):
-        # ignore all signals we don't care about
-        if identifier_code not in self.signal_id_to_names:
-            return
-
-        signal_names = self.signal_id_to_names[identifier_code]
         int_value = int(value, 2)
+        if identifier_code in self.signal_id_to_names:
+            signal_names = self.signal_id_to_names[identifier_code]
 
-        for signal_name in signal_names:
-            if (
-                signal_name == f"{self.main_component}.clk" and int_value == 0
-            ):  # ignore falling edges
-                continue
-            event = {"signal": signal_name, "value": int_value}
-            if time not in self.timestamps_to_events:
-                self.timestamps_to_events[time] = [event]
-            else:
-                self.timestamps_to_events[time].append(event)
+            for signal_name in signal_names:
+                if (
+                    signal_name == f"{self.main_component}.clk" and int_value == 0
+                ):  # ignore falling edges
+                    continue
+                event = {"signal": signal_name, "value": int_value}
+                if time not in self.timestamps_to_events:
+                    self.timestamps_to_events[time] = [event]
+                else:
+                    self.timestamps_to_events[time].append(event)
+        if identifier_code in self.control_signal_id_to_names:
+            signal_names = self.control_signal_id_to_names[identifier_code]
+            for signal_name in signal_names:
+                clean_signal_name = (
+                    remove_size_from_name(signal_name)
+                    .split("_go_out")[0]
+                    .replace(self.signal_prefix + ".", "")
+                )
+                event = {"group": clean_signal_name, "value": int_value}
+                if time not in self.timestamps_to_control_group_events:
+                    self.timestamps_to_control_group_events[time] = [event]
+                else:
+                    self.timestamps_to_control_group_events[time].append(event)
+        if identifier_code in self.tdcc_signal_id_to_names:
+            signal_names = self.tdcc_signal_id_to_names[identifier_code]
 
-    # Postprocess data mapping timestamps to events (signal changes)
-    # We have to postprocess instead of processing signals in a stream because
-    # signal changes that happen at the same time as a clock tick might be recorded
-    # *before* or *after* the clock change on the VCD file (hence why we can't process
-    # everything within a stream if we wanted to be precise)
+            for signal_name in signal_names:
+                clean_signal_name = remove_size_from_name(signal_name)
+                if time not in self.timestamps_to_control_reg_changes:
+                    self.timestamps_to_control_reg_changes[time] = {
+                        clean_signal_name: int_value
+                    }
+                else:
+                    self.timestamps_to_control_reg_changes[time][clean_signal_name] = (
+                        int_value
+                    )
+
+    """
+    Must run after postprocess
+    """
+
+    def postprocess_control(self):
+        control_group_events = {}  # cycle count --> [control groups that are active that cycle]
+        control_reg_updates = {
+            c: [] for c in self.cells_to_components
+        }  # cell name --> (clock_cycle, updates)
+        control_reg_per_cycle = {}  # clock cycle --> control_reg_update_type for leaf cell (longest cell name)
+        # for now, control_reg_update_type will be one of "fsm", "par-done", "both"
+
+        control_group_start_cycles = {}
+        for ts in self.timestamps_to_control_group_events:
+            if ts in self.timestamps_to_clock_cycles:
+                clock_cycle = self.timestamps_to_clock_cycles[ts]
+                events = self.timestamps_to_control_group_events[ts]
+                for event in events:
+                    group_name = event["group"]
+                    if event["value"] == 1:  # control group started
+                        control_group_start_cycles[group_name] = clock_cycle
+                    elif event["value"] == 0:  # control group ended
+                        for i in range(
+                            control_group_start_cycles[group_name], clock_cycle
+                        ):
+                            if i in control_group_events:
+                                control_group_events[i].add(group_name)
+                            else:
+                                control_group_events[i] = {group_name}
+
+        for ts in self.timestamps_to_control_reg_changes:
+            if ts in self.timestamps_to_clock_cycles:
+                clock_cycle = self.timestamps_to_clock_cycles[ts]
+                # control_reg_per_cycle[clock_cycle] = []
+                events = self.timestamps_to_control_reg_changes[ts]
+                cell_to_val_changes = {}
+                cell_to_change_type = {}
+                # we only care about registers when their write_enables are fired.
+                for write_en in filter(
+                    lambda e: e.endswith("write_en") and events[e] == 1, events.keys()
+                ):
+                    write_en_split = write_en.split(".")
+                    reg_name = ".".join(write_en_split[:-1])
+                    cell_name = ".".join(write_en_split[:-2])
+                    in_signal = f"{reg_name}.in"
+                    reg_new_value = events[in_signal] if in_signal in events else 0
+                    if not (
+                        reg_name in self.par_done_regs and reg_new_value == 0
+                    ):  # ignore when pd values turn 0 since they are only useful when they are high
+                        upd = f"{write_en_split[-2]}:{reg_new_value}"
+                        if cell_name in cell_to_val_changes:
+                            cell_to_val_changes[cell_name] += f", {upd}"
+                        else:
+                            cell_to_val_changes[cell_name] = upd
+                        # update cell_to_change_type
+                        if ".pd" in reg_name and cell_name not in cell_to_change_type:
+                            cell_to_change_type[cell_name] = "par-done"
+                        elif (
+                            ".pd" in reg_name
+                            and cell_to_change_type[cell_name] == "fsm"
+                        ):
+                            cell_to_change_type[cell_name] = "both"
+                        elif (
+                            ".fsm" in reg_name and cell_name not in cell_to_change_type
+                        ):
+                            cell_to_change_type[cell_name] = "fsm"
+                        elif (
+                            ".fsm" in reg_name
+                            and cell_to_change_type[cell_name] == "par-done"
+                        ):
+                            cell_to_change_type[cell_name] = "both"
+                        # m[cell_name].append((reg_name, reg_new_value, clock_cycle))
+                for cell in cell_to_val_changes:
+                    control_reg_updates[cell].append(
+                        (clock_cycle, cell_to_val_changes[cell])
+                    )
+                if len(cell_to_change_type) > 0:
+                    leaf_cell = sorted(
+                        cell_to_change_type.keys(), key=(lambda k: k.count("."))
+                    )[-1]
+                    control_reg_per_cycle[clock_cycle] = cell_to_change_type[leaf_cell]
+        return control_group_events, control_reg_updates, control_reg_per_cycle
+
+    """
+    Postprocess data mapping timestamps to events (signal changes)
+    We have to postprocess instead of processing signals in a stream because
+    signal changes that happen at the same time as a clock tick might be recorded
+    *before* or *after* the clock change on the VCD file (hence why we can't process
+    everything within a stream if we wanted to be precise)
+    """
+
     def postprocess(self):
         clock_name = f"{self.main_component}.clk"
         clock_cycles = -1  # will be 0 on the 0th cycle
@@ -179,7 +356,14 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
         structural_enable_active = set()
         cell_enable_active = set()
         primitive_enable = set()
-        self.cell_to_active_cycles = {}  # cell --> [{"start": X, "end": Y, "length": Y - X}].
+        trace = {}
+        trace_classified = []
+        cell_to_active_cycles_summary = {}  # cell --> {"num-times-active": _, "active-cycles": []}
+        # we lose information about the length of each segment but we can retrieve that information from the timeline
+
+        # The events are "partial" because we don't know yet what the tid and pid would be.
+        # (Will be filled in during create_timelines(); specifically in port_fsm_events())
+        fsm_current = {fsm: 0 for fsm in self.fsms}  # fsm --> value
 
         probe_labels_to_sets = {
             "group_probe_out": group_active,
@@ -187,8 +371,6 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
             "cell_probe_out": cell_enable_active,
             "primitive_probe_out": primitive_enable,
         }
-
-        self.trace = {}  # dict contents: cycle number --> list of stacks
 
         main_done = False  # Prevent creating a trace entry for the cycle where main.done is set high.
         for ts in self.timestamps_to_events:
@@ -203,6 +385,7 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
             # checking whether the timestamp has a rising edge
             if {"signal": clock_name, "value": 1} in events:
                 clock_cycles += 1
+                self.timestamps_to_clock_cycles[ts] = clock_cycles
             # Recording the data organization for every kind of probe so I don't forget. () is a set.
             # groups-active: cell --> (active groups)
             # cell-active: (cells)
@@ -225,10 +408,13 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
                 ):  # cells have .go and .done
                     cell = signal_name.split(".go")[0]
                     cell_active.add(cell)
-                    if cell not in self.cell_to_active_cycles:
-                        self.cell_to_active_cycles[cell] = [{"start": clock_cycles}]
+                    if cell not in cell_to_active_cycles_summary:
+                        cell_to_active_cycles_summary[cell] = {
+                            "num-times-active": 1,
+                            "active-cycles": set(),
+                        }  # add active-cycles when accounting for cell_active at the end
                     else:
-                        self.cell_to_active_cycles[cell].append({"start": clock_cycles})
+                        cell_to_active_cycles_summary[cell]["num-times-active"] += 1
                 if signal_name.endswith(".done") and value == 1:
                     cell = signal_name.split(".done")[0]
                     if (
@@ -236,9 +422,28 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
                     ):  # if main is done, we shouldn't compute a "trace" for this cycle. set flag to True.
                         main_done = True
                     cell_active.remove(cell)
-                    current_segment = self.cell_to_active_cycles[cell][-1]
-                    current_segment["end"] = clock_cycles
-                    current_segment["length"] = clock_cycles - current_segment["start"]
+                # process fsms
+                if ".out[" in signal_name:
+                    fsm_name = signal_name.split(".out[")[0]
+                    cell_name = ".".join(fsm_name.split(".")[:-1])
+                    if fsm_current[fsm_name] != value:
+                        # record the (partial) end event of the previous value and begin event of the current value
+                        partial_end_event = {
+                            "name": str(fsm_current[fsm_name]),
+                            "cat": "fsm",
+                            "ph": "E",
+                            "ts": clock_cycles * ts_multiplier,
+                        }
+                        partial_begin_event = {
+                            "name": str(value),
+                            "cat": "fsm",
+                            "ph": "B",
+                            "ts": clock_cycles * ts_multiplier,
+                        }
+                        self.partial_fsm_events[fsm_name].append(partial_end_event)
+                        self.partial_fsm_events[fsm_name].append(partial_begin_event)
+                        # update value
+                        fsm_current[fsm_name] = value
                 # process all probes.
                 for probe_label in probe_labels_to_sets:
                     cutoff = f"_{probe_label}"
@@ -255,6 +460,11 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
                         elif value == 0:
                             probe_labels_to_sets[probe_label].remove(probe_info)
             if not main_done:
+                # accumulate cycles active for each cell that was active
+                for cell in cell_active:
+                    cell_to_active_cycles_summary[cell]["active-cycles"].add(
+                        clock_cycles
+                    )
                 # add all probe information
                 info_this_cycle["cell-active"] = cell_active.copy()
                 for group, cell_name in group_active:
@@ -310,18 +520,40 @@ class VCDConverter(vcdvcd.StreamParserCallbacks):
                         info_this_cycle["primitive-enable"][cell_name][
                             parent_group
                         ].add(primitive_name)
-                self.trace[clock_cycles] = create_cycle_trace(
+                stacks_this_cycle = create_cycle_trace(
                     info_this_cycle, self.cells_to_components, self.main_component, True
                 )  # True to track primitives
-
+                trace[clock_cycles] = stacks_this_cycle
+                trace_classified.append(
+                    classify_stacks(stacks_this_cycle, self.main_shortname)
+                )
         self.clock_cycles = (
             clock_cycles  # last rising edge does not count as a full cycle (probably)
         )
 
+        return trace, trace_classified, cell_to_active_cycles_summary
 
-# Generates a list of all of the components to potential cell names
-# `prefix` is the cell's "path" (ex. for a cell "my_cell" defined in "main", the prefix would be "TOP.toplevel.main")
-# The initial value of curr_component should be the top level/main component
+
+def classify_stacks(stacks, main_shortname):
+    # True if something "useful" is happening this cycle (group or primitive)
+    acc = 0
+    for stack in stacks:
+        top = stack[-1]
+        if "(primitive)" in top:
+            acc += 1
+        elif "[" not in top and top != main_shortname:  # group
+            acc += 1
+
+    return acc
+
+
+"""
+Generates a list of all of the components to potential cell names
+`prefix` is the cell's "path" (ex. for a cell "my_cell" defined in "main", the prefix would be "TOP.toplevel.main")
+The initial value of curr_component should be the top level/main component
+"""
+
+
 def build_components_to_cells(
     prefix, curr_component, cells_to_components, components_to_cells
 ):
@@ -338,8 +570,15 @@ def build_components_to_cells(
         )
 
 
-# Reads json generated by component-cells backend to produce a mapping from all components
-# to cell names they could have.
+"""
+Reads json generated by component-cells backend to produce a mapping from all components
+to cell names they could have.
+
+NOTE: Cell names by this point don't contain the simulator-specific prefix. This will be
+filled by VCDConverter.enddefinitions().
+"""
+
+
 def read_component_cell_names_json(json_file):
     cell_json = json.load(open(json_file))
     # For each component, contains a map from each cell name to its corresponding component
@@ -353,19 +592,21 @@ def read_component_cell_names_json(json_file):
         for cell_info in curr_component_entry["cell_info"]:
             cell_map[cell_info["cell_name"]] = cell_info["component_name"]
         cells_to_components[curr_component_entry["component"]] = cell_map
-    full_main_component = f"TOP.toplevel.{main_component}"
     components_to_cells = {
-        main_component: [full_main_component]
+        main_component: [main_component]
     }  # come up with a better name for this
     build_components_to_cells(
-        full_main_component, main_component, cells_to_components, components_to_cells
+        main_component, main_component, cells_to_components, components_to_cells
     )
-    full_cell_names_to_components = {}
+    # semi-fully_qualified_cell_name --> component name (of cell)
+    # I say semi-here because the prefix depends on the simulator + OS
+    # (ex. "TOP.toplevel" for Verilator on ubuntu)
+    cell_names_to_components = {}
     for component in components_to_cells:
         for cell in components_to_cells[component]:
-            full_cell_names_to_components[cell] = component
+            cell_names_to_components[cell] = component
 
-    return full_main_component, full_cell_names_to_components
+    return main_component, cell_names_to_components, components_to_cells
 
 
 """
@@ -474,7 +715,6 @@ def create_tree_rankings(
                     f.write(f'\t{edge} [color="{INVISIBLE}"]; \n')
             f.write("}")
 
-        # should write to a txt file what
         rankings_out.write(f"{acc},{len(cycles)},{';'.join(str(c) for c in cycles)}\n")
 
 
@@ -518,8 +758,6 @@ def create_aggregate_tree(timeline_map, out_dir, tree_dict, path_dict):
                 leaves_this_cycle.add(leaf_node)
 
     # write the tree
-    if not os.path.exists(out_dir):
-        os.mkdir(out_dir)
     with open(os.path.join(out_dir, "aggregate.dot"), "w") as f:
         f.write("digraph aggregate {\n")
         # declare nodes
@@ -572,9 +810,49 @@ def create_edge_dict(path_dict):
     return path_to_edges, list(sorted(all_edges))
 
 
-# create a tree where we divide cycles via par arms
-def compute_scaled_flame(trace):
-    stacks = {}
+def write_flame_map(flame_map, flame_out_file):
+    with open(flame_out_file, "w") as flame_out:
+        for stack in flame_map:
+            flame_out.write(f"{stack} {flame_map[stack]}\n")
+
+
+def write_flame_maps(
+    flat_flame_map,
+    scaled_flame_map,
+    flames_out_dir,
+    flame_out_file,
+    scaled_flame_out_file=None,
+):
+    if not os.path.exists(flames_out_dir):
+        os.mkdir(flames_out_dir)
+
+    # write flat flame map
+    write_flame_map(flat_flame_map, flame_out_file)
+
+    # write scaled flame map
+    if scaled_flame_out_file is None:
+        scaled_flame_out_file = os.path.join(flames_out_dir, "scaled-flame.folded")
+    write_flame_map(scaled_flame_map, scaled_flame_out_file)
+
+
+"""
+Creates flat and scaled flame maps from a trace.
+"""
+
+
+def create_flame_maps(trace):
+    # flat flame graph; each par arm is counted for 1 cycle
+    flat_flame_map = {}  # stack to number of cycles
+    for i in trace:
+        for stack_list in trace[i]:
+            stack_id = ";".join(stack_list)
+            if stack_id not in flat_flame_map:
+                flat_flame_map[stack_id] = 1
+            else:
+                flat_flame_map[stack_id] += 1
+
+    # scaled flame graph; each cycle is divided by the number of par arms that are concurrently active.
+    scaled_flame_map = {}
     for i in trace:
         num_stacks = len(trace[i])
         cycle_slice = round(1 / num_stacks, 3)
@@ -583,50 +861,24 @@ def compute_scaled_flame(trace):
         for stack_list in trace[i]:
             stack_id = ";".join(stack_list)
             slice_to_add = cycle_slice if acc < num_stacks - 1 else last_cycle_slice
-            if stack_id not in stacks:
-                stacks[stack_id] = slice_to_add * SCALED_FLAME_MULTIPLIER
+            if stack_id not in scaled_flame_map:
+                scaled_flame_map[stack_id] = slice_to_add * SCALED_FLAME_MULTIPLIER
             else:
-                stacks[stack_id] += slice_to_add * SCALED_FLAME_MULTIPLIER
+                scaled_flame_map[stack_id] += slice_to_add * SCALED_FLAME_MULTIPLIER
             acc += 1
 
-    return stacks
-
-
-def create_flame_groups(
-    trace, flame_out_file, flames_out_dir, scaled_flame_out_file=None
-):
-    if not os.path.exists(flames_out_dir):
-        os.mkdir(flames_out_dir)
-
-    # make flame graph folded file
-    stacks = {}  # stack to number of cycles
-    for i in trace:
-        for stack_list in trace[i]:
-            stack_id = ";".join(stack_list)
-            if stack_id not in stacks:
-                stacks[stack_id] = 1
-            else:
-                stacks[stack_id] += 1
-
-    with open(flame_out_file, "w") as flame_out:
-        for stack in stacks:
-            flame_out.write(f"{stack} {stacks[stack]}\n")
-
-    scaled_stacks = compute_scaled_flame(trace)
-    if scaled_flame_out_file is None:
-        scaled_flame_out_file = os.path.join(flames_out_dir, "scaled-flame.folded")
-    with open(scaled_flame_out_file, "w") as div_flame_out:
-        for stack in scaled_stacks:
-            div_flame_out.write(f"{stack} {scaled_stacks[stack]}\n")
+    return flat_flame_map, scaled_flame_map
 
 
 def create_slideshow_dot(timeline_map, dot_out_dir, flame_out_file, flames_out_dir):
     if not os.path.exists(dot_out_dir):
         os.mkdir(dot_out_dir)
 
-    # probably wise to not have a billion dot files.
+    # only produce trees for every cycle if we don't exceed TREE_PICTURE_LIMIT
     if len(timeline_map) > TREE_PICTURE_LIMIT:
-        print(f"Simulation exceeds {TREE_PICTURE_LIMIT} cycles, skipping trees...")
+        print(
+            f"Simulation exceeds {TREE_PICTURE_LIMIT} cycles, skipping slideshow trees for every cycle..."
+        )
         return
     tree_dict, path_dict = create_tree(timeline_map)
     path_to_edges, all_edges = create_edge_dict(path_dict)
@@ -673,96 +925,279 @@ def dump_trace(trace, out_dir):
         json.dump(trace, json_out, indent=2)
 
 
-def compute_timeline(trace, cells_to_components, main_component, out_dir):
-    cells_to_curr_active = {}
-    cells_to_closed_segments = {}  # cell --> [{start: X, end: Y}]. Think [X, Y)
-    # creating a timeline for all cells in the program.
-    for cell in sorted(cells_to_components.keys(), key=(lambda x: x.count("."))):
-        if cell != main_component:
-            cells_to_curr_active[cell] = -1
-            cells_to_closed_segments[cell] = []
+class TimelineCell:
+    # bookkeeping for forming cells and their groups
+    def __init__(self, name, pid):
+        self.name = name
+        self.pid = pid
+        self.tid = 1  # the cell itself gets tid 1, FSMs gets 2+, followed by parallel executions of groups
+        self.tid_acc = 2
+        self.fsm_to_tid = {}  # contents: group/fsm --> tid
+        self.currently_active_group_to_tid = {}
+        self.queued_tids = []
+
+    def get_metatrack_pid_tid(self, fsm_name):
+        if fsm_name not in self.fsm_to_tid:
+            self.fsm_to_tid[fsm_name] = self.tid_acc
+            self.tid_acc += 1
+        return (self.pid, self.fsm_to_tid[fsm_name])
+
+    def get_group_pid_tid(self, group_name):
+        return (self.pid, self.currently_active_group_to_tid[group_name])
+
+    def add_group(self, group_name):
+        if (
+            group_name in self.currently_active_group_to_tid
+        ):  # no-op since the group is already registered.
+            return self.currently_active_group_to_tid[group_name]
+        if len(self.queued_tids) > 0:
+            group_tid = min(self.queued_tids)
+            self.queued_tids.remove(group_tid)
+        else:
+            group_tid = self.tid_acc
+            self.tid_acc += 1
+        self.currently_active_group_to_tid[group_name] = group_tid
+        return (self.pid, group_tid)
+
+    def remove_group(self, group_name):
+        group_tid = self.currently_active_group_to_tid[group_name]
+        self.queued_tids.append(group_tid)
+        del self.currently_active_group_to_tid[group_name]
+        return (self.pid, group_tid)
+
+
+def write_timeline_event(event, out_file):
+    global num_timeline_events
+    if num_timeline_events == 0:  # shouldn't prepend a comma on the first entry
+        out_file.write(f"\n{JSON_INDENT}{json.dumps(event)}")
+    else:
+        out_file.write(f",\n{JSON_INDENT}{json.dumps(event)}")
+    num_timeline_events += 1
+
+
+def port_fsm_and_control_events(
+    partial_fsm_events, control_updates, cell_to_info, cell_name, out_file
+):
+    for fsm_name in list(partial_fsm_events.keys()):
+        # NOTE: uncomment below to bring back FSM tracks to the timeline.
+        # fsm_cell_name = ".".join(fsm_name.split(".")[:-1])
+        # if fsm_cell_name == cell_name:
+        #     (fsm_pid, fsm_tid) = cell_to_info[cell_name].get_metatrack_pid_tid(fsm_name)
+        #     for entry in partial_fsm_events[fsm_name]:
+        #         entry["pid"] = fsm_pid
+        #         entry["tid"] = fsm_tid
+        #         write_timeline_event(entry, out_file)
+        del partial_fsm_events[fsm_name]
+    for cycle, update in control_updates[cell_name]:
+        (control_pid, control_tid) = cell_to_info[cell_name].get_metatrack_pid_tid(
+            "CTRL"
+        )
+        begin_event = {
+            "name": update,
+            "cat": "CTRL",
+            "ph": "B",
+            "ts": cycle * ts_multiplier,
+            "pid": control_pid,
+            "tid": control_tid,
+        }
+        end_event = {
+            "name": update,
+            "cat": "CTRL",
+            "ph": "E",
+            "ts": (cycle + 1) * ts_multiplier,
+            "pid": control_pid,
+            "tid": control_tid,
+        }
+        write_timeline_event(begin_event, out_file)
+        write_timeline_event(end_event, out_file)
+    del control_updates[cell_name]
+
+
+def compute_timeline(
+    trace, partial_fsm_events, control_updates, main_component, out_dir
+):
+    # generate the JSON on the fly instead of storing everything in a list to save memory
+    out_path = os.path.join(out_dir, "timeline-dump.json")
+    out_file = open(out_path, "w", encoding="utf-8")
+    # start the JSON file
+    out_file.write(f'{{\n{JSON_INDENT}"traceEvents": [')
+    # each cell gets its own pid. The cell's lifetime is tid 1, followed by the FSM(s), then groups
+    # main component gets pid 1
+    cell_to_info = {main_component: TimelineCell(main_component, 1)}
+    # generate JSON for all FSM events in main
+    port_fsm_and_control_events(
+        partial_fsm_events, control_updates, cell_to_info, main_component, out_file
+    )
+    group_to_parent_cell = {}
+    pid_acc = 2
     currently_active = set()
+    main_name = main_component.split(".")[-1]
     for i in trace:
         active_this_cycle = set()
         for stack in trace[i]:
             stack_acc = main_component
+            current_cell = main_component  # need to keep track of cells in case we have a structural group enable.
             for stack_elem in stack:
+                name = None
                 if " [" in stack_elem:  # cell
                     stack_acc += "." + stack_elem.split(" [")[0]
-                if stack_acc in cells_to_curr_active:  # this is a cell we care about!
-                    active_this_cycle.add(stack_acc)
-        for nonactive in currently_active.difference(
+                    name = stack_acc
+                    current_cell = name
+                    if name not in cell_to_info:  # cell is not registered yet
+                        cell_to_info[name] = TimelineCell(name, pid_acc)
+                        # generate JSON for all FSM events in this cell
+                        port_fsm_and_control_events(
+                            partial_fsm_events,
+                            control_updates,
+                            cell_to_info,
+                            name,
+                            out_file,
+                        )
+                        pid_acc += 1
+                elif "(primitive)" in stack_elem:  # ignore primitives for now.
+                    continue
+                elif (
+                    stack_elem == main_name
+                ):  # don't accumulate to the stack if your name is main.
+                    stack_acc = stack_acc
+                    name = main_component
+                else:  # group
+                    name = stack_acc + "." + stack_elem
+                    group_to_parent_cell[name] = current_cell
+                active_this_cycle.add(name)
+        for nonactive_element in currently_active.difference(
             active_this_cycle
-        ):  # cell that was previously active but no longer is
-            start_cycle = cells_to_curr_active[nonactive]
-            cells_to_closed_segments[nonactive].append({"start": start_cycle, "end": i})
-            cells_to_curr_active[nonactive] = -1
-        for newly_active in active_this_cycle.difference(currently_active):
-            cells_to_curr_active[newly_active] = i
-        currently_active = active_this_cycle  # retain the current one for next cycle.
-    for cell in currently_active:  # need to close
-        start_cycle = cells_to_curr_active[cell]
-        cells_to_closed_segments[cell].append({"start": start_cycle, "end": len(trace)})
-    events = []
-    # add main on process + thread 1 so we get the full picture.
-    events.append(
-        {"name": main_component, "cat": "main", "ph": "B", "pid": 1, "tid": 1, "ts": 0}
-    )
-    events.append(
-        {
-            "name": main_component,
-            "cat": "main",
-            "ph": "E",
-            "pid": 1,
-            "tid": 1,
-            "ts": len(trace) * ts_multiplier,
-        }
-    )
-    pt_id = 2
-    for cell in cells_to_closed_segments:
-        for closed_segment in cells_to_closed_segments[cell]:
-            start_event = {
-                "name": cell,
-                "cat": "cell",
-                "ph": "B",
-                "pid": 1,
-                "tid": pt_id,
-                "ts": closed_segment["start"] * ts_multiplier,
-            }  # , "sf" : cell_stackframe
-            events.append(start_event)
-            end_event = start_event.copy()
-            end_event["ph"] = "E"
-            end_event["ts"] = closed_segment["end"] * ts_multiplier
-            events.append(end_event)
-        pt_id += 1
+        ):  # element that was previously active but no longer is.
+            # make end event
+            end_event = create_timeline_event(
+                nonactive_element, i, "E", cell_to_info, group_to_parent_cell
+            )
+            write_timeline_event(end_event, out_file)
+        for newly_active_element in active_this_cycle.difference(
+            currently_active
+        ):  # element that started to be active this cycle.
+            begin_event = create_timeline_event(
+                newly_active_element, i, "B", cell_to_info, group_to_parent_cell
+            )
+            write_timeline_event(begin_event, out_file)
+        currently_active = active_this_cycle
 
-    # write to file
-    out_path = os.path.join(out_dir, "timeline-dump.json")
-    with open(out_path, "w", encoding="utf-8") as out_file:
-        out_file.write(json.dumps({"traceEvents": events}, indent=4))
-
-
-def write_cell_stats(cell_to_active_cycles, out_dir):
-    # cell-name,total-cycles,times-active,avg
-    stats = []
-    for cell in cell_to_active_cycles:
-        total_cycles = 0
-        times_active = len(cell_to_active_cycles[cell])
-        for elem in cell_to_active_cycles[cell]:
-            total_cycles += elem["length"]
-        avg_cycles = round(total_cycles / times_active, 2)
-        stats.append(
-            {
-                "cell-name": cell,
-                "total-cycles": total_cycles,
-                "times-active": times_active,
-                "avg": avg_cycles,
-            }
+    for still_active_element in (
+        currently_active
+    ):  # need to close any elements that are still active at the end of the simulation
+        end_event = create_timeline_event(
+            still_active_element, len(trace), "E", cell_to_info, group_to_parent_cell
         )
+        write_timeline_event(end_event, out_file)
+
+    # close off the json
+    out_file.write("\t\t]\n}")
+    out_file.close()
+
+
+"""
+Creates a JSON entry for traceEvents.
+element_name: fully qualified name of cell/group
+cycle: timestamp of the event, in cycles
+event_type: "B" for begin event, "E" for end event
+"""
+
+
+def create_timeline_event(
+    element_name, cycle, event_type, cell_to_info, group_to_parent_cell
+):
+    if element_name in cell_to_info:  # cell
+        event = {
+            "name": element_name,
+            "cat": "cell",
+            "ph": event_type,
+            "pid": cell_to_info[element_name].pid,
+            "tid": 1,
+            "ts": cycle * ts_multiplier,
+        }
+    else:  # group; need to extract the cell name to obtain tid and pid.
+        cell_name = group_to_parent_cell[element_name]
+        cell_info = cell_to_info[cell_name]
+        if event_type == "B":
+            (pid, tid) = cell_info.add_group(element_name)
+        else:
+            (pid, tid) = cell_info.remove_group(element_name)
+        event = {
+            "name": element_name.split(".")[
+                -1
+            ],  # take only the group name for easier visibility
+            "cat": "group",
+            "ph": event_type,
+            "pid": pid,
+            "tid": tid,
+            "ts": cycle * ts_multiplier,
+        }
+    return event
+
+
+def write_cell_stats(
+    cell_to_active_cycles,
+    cats_to_cycles,
+    cells_to_components,
+    component_to_num_fsms,
+    total_cycles,
+    out_dir,
+):
+    fieldnames = [
+        "cell-name",
+        "num-fsms",
+        "useful-cycles",
+        "total-cycles",
+        "times-active",
+        "avg",
+    ] + [f"{cat} (%)" for cat in cats_to_cycles]  # fields in CSV file
+    stats = []
+    totals = {fieldname: 0 for fieldname in fieldnames}
+    for cell in cell_to_active_cycles:
+        component = cells_to_components[cell]
+        num_fsms = component_to_num_fsms[component]
+        cell_total_cycles = len(cell_to_active_cycles[cell]["active-cycles"])
+        times_active = cell_to_active_cycles[cell]["num-times-active"]
+        cell_cat = {cat: set() for cat in cats_to_cycles}
+        for cat in cats_to_cycles:
+            cell_cat[cat].update(
+                cell_to_active_cycles[cell]["active-cycles"].intersection(
+                    cats_to_cycles[cat]
+                )
+            )
+
+        avg_cycles = round(cell_total_cycles / times_active, 2)
+        stats_dict = {
+            "cell-name": f"{cell} [{component}]",
+            "num-fsms": num_fsms,
+            "useful-cycles": len(cell_cat["group/primitive"]) + len(cell_cat["other"]),
+            "total-cycles": cell_total_cycles,
+            "times-active": times_active,
+            "avg": avg_cycles,
+        }
+        # aggregate stats that should be summed over
+        totals["num-fsms"] += num_fsms
+        for cat in cats_to_cycles:
+            stats_dict[f"{cat} (%)"] = round(
+                (len(cell_cat[cat]) / cell_total_cycles) * 100, 1
+            )
+        stats.append(stats_dict)
+    # total: aggregate other stats that shouldn't just be summed over
+    totals["cell-name"] = "TOTAL"
+    totals["total-cycles"] = total_cycles
+    for cat in cats_to_cycles:
+        if cat == "group/primitive" or cat == "other":
+            totals["useful-cycles"] += len(cats_to_cycles[cat])
+        totals[f"{cat} (%)"] = round((len(cats_to_cycles[cat]) / total_cycles) * 100, 1)
+    totals["avg"] = "-"
     stats.sort(key=lambda e: e["total-cycles"], reverse=True)
-    fieldnames = ["cell-name", "total-cycles", "times-active", "avg"]
-    with open(os.path.join(out_dir, "cell-stats.csv"), "w") as csvFile:
-        writer = csv.DictWriter(csvFile, fieldnames=fieldnames)
+    stats.append(totals)  # total should come at the end
+    with open(
+        os.path.join(out_dir, "cell-stats.csv"), "w", encoding="utf-8"
+    ) as csvFile:
+        writer = csv.DictWriter(
+            csvFile, fieldnames=fieldnames, lineterminator=os.linesep
+        )
         writer.writeheader()
         writer.writerows(stats)
 
@@ -796,125 +1231,401 @@ def read_adl_mapping_file(adl_mapping_file):
     return component_mappings, cell_mappings, group_mappings
 
 
-def convert_trace(trace, adl_mapping_file):
+"""
+Creates ADL and Mixed (ADL + Calyx) versions of flame graph maps.
+"""
+
+
+def convert_flame_map(flame_map, adl_mapping_file):
     component_map, cell_map, group_map = read_adl_mapping_file(adl_mapping_file)
-    mixed_trace = {
-        i: [] for i in trace
-    }  # contains both calyx group/cell/component name and ADL source location.
-    adl_only_trace = {
-        i: [] for i in trace
-    }  # contains only the ADL source location (NOTE: would be nice to have the construct name within the ADL?)
+    adl_flame_map = {}
+    mixed_flame_map = {}
 
-    # trace should probably be more principled than this... lol
-    for i in trace:
-        for stack in trace[i]:
-            adl_only_stack = []
-            mixed_stack = []
-            curr_component = None
-            for stack_elem in stack:
-                # going to start by assuming "main" is the entrypoint.
-                if stack_elem == "main":
-                    curr_component = stack_elem
-                    sourceloc = component_map[stack_elem]
-                    mixed_stack_elem = f"main {{{sourceloc}}}"
-                    adl_stack_elem = mixed_stack_elem
-                elif "[" in stack_elem:  # invocation of component cell
-                    cell = stack_elem.split("[")[0].strip()
-                    cell_sourceloc = cell_map[curr_component][cell]
-                    cell_component = stack_elem.split("[")[1].split("]")[0]
-                    cell_component_sourceloc = component_map[cell_component]
-                    mixed_stack_elem = f"{cell} {{{cell_sourceloc}}} [{cell_component} {{{cell_component_sourceloc}}}]"
-                    adl_stack_elem = f"{cell_sourceloc.varname} {{{cell_sourceloc}}} [{cell_component_sourceloc.varname} {{{cell_component_sourceloc}}}]"
-                    curr_component = cell_component
-                elif "(primitive)" in stack_elem:  # primitive
-                    primitive = stack_elem.split("(primitive)")[0].strip()
-                    primitive_sourceloc = cell_map[curr_component][primitive]
-                    mixed_stack_elem = f"{stack_elem} {{{primitive_sourceloc}}}"
-                    adl_stack_elem = (
-                        f"{primitive_sourceloc.varname} {{{primitive_sourceloc}}}"
-                    )
-                else:  # group
-                    # ignore compiler-generated groups (invokes) for now...
-                    if stack_elem in group_map[curr_component]:
-                        sourceloc = group_map[curr_component][stack_elem]
-                        adl_stack_elem = f"{sourceloc.varname} {{{sourceloc}}}"
-                    else:
-                        sourceloc = "compiler-generated"
-                        adl_stack_elem = sourceloc
-                    mixed_stack_elem = f"{stack_elem} {{{sourceloc}}}"
-                adl_only_stack.append(adl_stack_elem)
-                mixed_stack.append(mixed_stack_elem)
-            adl_only_trace[i].append(adl_only_stack)
-            mixed_trace[i].append(mixed_stack)
+    for stack in sorted(flame_map.keys()):
+        cycles = flame_map[stack]
+        adl_stack = []
+        mixed_stack = []
+        curr_component = None
+        for stack_elem in stack.split(";"):
+            # going to start by assuming "main" is the entrypoint.
+            if stack_elem == "main":
+                curr_component = stack_elem
+                sourceloc = component_map[stack_elem]
+                mixed_stack_elem = f"main {{{sourceloc}}}"
+                adl_stack_elem = mixed_stack_elem
+            elif "[" in stack_elem:  # invocation of component cell
+                cell = stack_elem.split("[")[0].strip()
+                cell_sourceloc = cell_map[curr_component][cell]
+                cell_component = stack_elem.split("[")[1].split("]")[0]
+                cell_component_sourceloc = component_map[cell_component]
+                mixed_stack_elem = f"{cell} {{{cell_sourceloc}}} [{cell_component} {{{cell_component_sourceloc}}}]"
+                adl_stack_elem = f"{cell_sourceloc.varname} {{{cell_sourceloc}}} [{cell_component_sourceloc.varname} {{{cell_component_sourceloc}}}]"
+                curr_component = cell_component
+            elif "(primitive)" in stack_elem:  # primitive
+                primitive = stack_elem.split("(primitive)")[0].strip()
+                primitive_sourceloc = cell_map[curr_component][primitive]
+                mixed_stack_elem = f"{stack_elem} {{{primitive_sourceloc}}}"
+                adl_stack_elem = (
+                    f"{primitive_sourceloc.varname} {{{primitive_sourceloc}}}"
+                )
+            else:  # group
+                # ignore compiler-generated groups (invokes) for now...
+                if stack_elem in group_map[curr_component]:
+                    sourceloc = group_map[curr_component][stack_elem]
+                    adl_stack_elem = f"{sourceloc.varname} {{{sourceloc}}}"
+                else:
+                    sourceloc = "compiler-generated"
+                    adl_stack_elem = sourceloc
+                mixed_stack_elem = f"{stack_elem} {{{sourceloc}}}"
+            adl_stack.append(adl_stack_elem)
+            mixed_stack.append(mixed_stack_elem)
+        # multiple Calyx stacks might have the same ADL stack (same source). If the ADL/mixed stack already exists in the map, we add the cycles from this Calyx stack.
+        adl_stack_str = ";".join(adl_stack)
+        mixed_stack_str = ";".join(mixed_stack)
+        if adl_stack_str in adl_flame_map:
+            adl_flame_map[adl_stack_str] += cycles
+        else:
+            adl_flame_map[adl_stack_str] = cycles
+        if mixed_stack_str in mixed_flame_map:
+            mixed_flame_map[mixed_stack_str] += cycles
+        else:
+            mixed_flame_map[mixed_stack_str] = cycles
 
-    return adl_only_trace, mixed_trace
+    return adl_flame_map, mixed_flame_map
 
 
-def main(vcd_filename, cells_json_file, adl_mapping_file, out_dir, flame_out):
-    print(f"Start time: {datetime.now()}")
-    main_component, cells_to_components = read_component_cell_names_json(
-        cells_json_file
+"""
+# Returns { cell --> fsm fully qualified names }
+Returns a set of all fsms with fully qualified fsm names
+"""
+
+
+def read_tdcc_file(fsm_json_file, components_to_cells):
+    json_data = json.load(open(fsm_json_file))
+    fully_qualified_fsms = set()
+    par_info = {}  # fully qualified par name --> [fully-qualified par children name]
+    reverse_par_info = {}  # fully qualified par name --> [fully-qualified par parent name]
+    cell_to_pars = {}
+    cell_to_groups_to_par_parent = {}  # cell --> { group --> name of par parent group}. Kind of like reverse_par_info but for normal groups
+    # this is necessary because if a nested par occurs simultaneously with a group, we don't want the nested par to be a parent of the group
+    par_done_regs = set()
+    component_to_fsm_acc = {component: 0 for component in components_to_cells}
+    # pass 1: obtain names of all par groups in each component
+    component_to_pars = {}  # component --> [par groups]
+    for json_entry in json_data:
+        if "Par" in json_entry:
+            component = json_entry["Par"]["component"]
+            if component in component_to_pars:
+                component_to_pars[component].append(json_entry["Par"]["par_group"])
+            else:
+                component_to_pars[component] = json_entry["Par"]["par_group"]
+    # pass 2: obtain FSM register info, par group and child register information
+    for json_entry in json_data:
+        if "Fsm" in json_entry:
+            entry = json_entry["Fsm"]
+            fsm_name = entry["fsm"]
+            component = entry["component"]
+            component_to_fsm_acc[component] += 1
+            for cell in components_to_cells[component]:
+                fully_qualified_fsm = ".".join((cell, fsm_name))
+                fully_qualified_fsms.add(fully_qualified_fsm)
+        if "Par" in json_entry:
+            entry = json_entry["Par"]
+            par = entry["par_group"]
+            component = entry["component"]
+            child_par_groups = []
+            for cell in components_to_cells[component]:
+                fully_qualified_par = ".".join((cell, par))
+                if cell in cell_to_pars:
+                    cell_to_pars[cell].add(fully_qualified_par)
+                else:
+                    cell_to_pars[cell] = {fully_qualified_par}
+                for child in entry["child_groups"]:
+                    child_name = child["group"]
+                    if child_name in component_to_pars[component]:
+                        fully_qualified_child_name = ".".join((cell, child_name))
+                        child_par_groups.append(fully_qualified_child_name)
+                        if fully_qualified_child_name in reverse_par_info:
+                            reverse_par_info[fully_qualified_child_name].append(
+                                fully_qualified_par
+                            )
+                        else:
+                            reverse_par_info[fully_qualified_child_name] = [
+                                fully_qualified_par
+                            ]
+                    else:  # normal group
+                        if cell in cell_to_groups_to_par_parent:
+                            if child_name in cell_to_groups_to_par_parent[cell]:
+                                cell_to_groups_to_par_parent[cell][child_name].add(par)
+                            else:
+                                cell_to_groups_to_par_parent[cell][child_name] = {par}
+                        else:
+                            cell_to_groups_to_par_parent[cell] = {child_name: {par}}
+                    # register
+                    child_pd_reg = child["register"]
+                    par_done_regs.add(".".join((cell, child_pd_reg)))
+                par_info[fully_qualified_par] = child_par_groups
+
+    return (
+        fully_qualified_fsms,
+        component_to_fsm_acc,
+        par_info,
+        reverse_par_info,
+        cell_to_pars,
+        par_done_regs,
+        cell_to_groups_to_par_parent,
     )
+
+
+"""
+Give a partial ordering for pars
+(1) order based on cells
+(2) for pars in the same cell, order based on dependencies information
+"""
+
+
+def order_pars(cell_to_pars, par_deps, rev_par_deps, signal_prefix):
+    ordered = {}  # cell --> ordered par names
+    for cell in sorted(cell_to_pars, key=(lambda c: c.count("."))):
+        ordered[cell] = []
+        pars = cell_to_pars[cell]
+        # start with pars with no parent
+        worklist = list(pars.difference(rev_par_deps))
+        while len(worklist) > 0:
+            par = worklist.pop(0)
+            if par not in ordered:
+                ordered[cell].append(par)  # f"{signal_prefix}.{par}"
+            # get all the children of this par
+            worklist += par_deps[par]
+    return ordered
+
+
+def add_par_to_trace(
+    trace,
+    par_trace,
+    cells_to_ordered_pars,
+    cell_to_groups_to_par_parent,
+    main_shortname,
+):
+    new_trace = {i: [] for i in trace}
+    for i in trace:
+        if i in par_trace:
+            for events_stack in trace[i]:
+                new_events_stack = []
+                for construct in events_stack:
+                    new_events_stack.append(construct)
+                    if construct == main_shortname:  # main
+                        current_cell = main_shortname
+                    elif " [" in construct:  # cell detected
+                        current_cell += "." + construct.split(" [")[0]
+                    elif "(primitive)" not in construct:  # group
+                        # handling the edge case of nested pars concurrent with groups; pop any pars that aren't this group's parent.
+                        if (
+                            current_cell in cell_to_groups_to_par_parent
+                            and construct in cell_to_groups_to_par_parent[current_cell]
+                        ):
+                            group_parents = cell_to_groups_to_par_parent[current_cell][
+                                construct
+                            ]
+                            parent_found = False
+                            while (
+                                len(new_events_stack) > 2
+                                and "(ctrl)" in new_events_stack[-2]
+                            ):  # NOTE: fix in future when there are multiple "ctrl" elements
+                                for parent in group_parents:
+                                    if f"{parent} (ctrl)" == new_events_stack[-2]:
+                                        parent_found = True
+                                        break
+                                if parent_found:
+                                    break
+                                new_events_stack.pop(-2)
+                        continue
+                    else:
+                        continue
+                    # get all of the active pars from this cell
+                    if current_cell in cells_to_ordered_pars:
+                        active_from_cell = par_trace[i].intersection(
+                            cells_to_ordered_pars[current_cell]
+                        )
+                        for par_group_active in sorted(
+                            active_from_cell,
+                            key=(
+                                lambda p: cells_to_ordered_pars[current_cell].index(p)
+                            ),
+                        ):
+                            par_group_name = par_group_active.split(".")[-1] + " (ctrl)"
+                            new_events_stack.append(par_group_name)
+                new_trace[i].append(new_events_stack)
+        else:
+            new_trace[i] = trace[i].copy()
+
+    return new_trace
+
+
+def create_simple_flame_graph(classified_trace, control_reg_updates, out_dir):
+    flame_base_map = {
+        "group/primitive": [],
+        "fsm": [],
+        "par-done": [],
+        "mult-ctrl": [],  # fsm and par-done. Have not seen this yet
+        "other": [],
+    }
+    for i in range(len(classified_trace)):
+        if classified_trace[i] > 0:
+            flame_base_map["group/primitive"].append(i)
+        elif (
+            i not in control_reg_updates
+        ):  # I suspect this is 1 cycle to execute a combinational group.
+            flame_base_map["other"].append(i)
+            classified_trace[i] = 1  # FIXME: hack to flag this as a "useful" cycle
+        elif control_reg_updates[i] == "both":
+            flame_base_map["fsm + par-done"].append(i)
+        else:
+            flame_base_map[control_reg_updates[i]].append(i)
+    # modify names to contain their cycles (for easier viewing)
+    flame_map = {key: len(flame_base_map[key]) for key in flame_base_map}
+    for label in list(flame_map.keys()):
+        flame_map[f"{label} ({flame_map[label]})"] = flame_map[label]
+        del flame_map[label]
+    write_flame_map(flame_map, os.path.join(out_dir, "overview.folded"))
+    return flame_base_map
+
+
+def main(
+    vcd_filename, cells_json_file, tdcc_json_file, adl_mapping_file, out_dir, flame_out
+):
+    print(f"Start time: {datetime.now()}")
+    main_shortname, cells_to_components, components_to_cells = (
+        read_component_cell_names_json(cells_json_file)
+    )
+    (
+        fully_qualified_fsms,
+        component_to_num_fsms,
+        par_dep_info,
+        reverse_par_dep_info,
+        cell_to_pars,
+        par_done_regs,
+        cell_to_groups_to_par_parent,
+    ) = read_tdcc_file(tdcc_json_file, components_to_cells)
+    # moving output info out of the converter
+    fsm_events = {
+        fsm: [{"name": str(0), "cat": "fsm", "ph": "B", "ts": 0}]
+        for fsm in fully_qualified_fsms
+    }  # won't be fully filled in until create_timeline()
     print(f"Start reading VCD: {datetime.now()}")
-    converter = VCDConverter(main_component, cells_to_components)
+    converter = VCDConverter(
+        main_shortname,
+        cells_to_components,
+        fully_qualified_fsms,
+        fsm_events,
+        set(par_dep_info.keys()),
+        par_done_regs,
+    )
     vcdvcd.VCDVCD(vcd_filename, callbacks=converter)
+    signal_prefix = converter.signal_prefix
+    main_fullname = converter.main_component
     print(f"Start Postprocessing VCD: {datetime.now()}")
-    converter.postprocess()
+
+    trace, trace_classified, cell_to_active_cycles = (
+        converter.postprocess()
+    )  # trace contents: cycle # --> list of stacks, trace_classified is a list: cycle # (indices) --> # useful stacks
+    control_groups_trace, control_reg_updates, control_reg_updates_per_cycle = (
+        converter.postprocess_control()
+    )
+    cell_to_ordered_pars = order_pars(
+        cell_to_pars, par_dep_info, reverse_par_dep_info, signal_prefix
+    )
+    trace_with_pars = add_par_to_trace(
+        trace,
+        control_groups_trace,
+        cell_to_ordered_pars,
+        cell_to_groups_to_par_parent,
+        main_shortname,
+    )
     print(f"End Postprocessing VCD: {datetime.now()}")
     print(f"End reading VCD: {datetime.now()}")
+    del converter
 
-    if len(converter.trace) < 100:
-        for i in converter.trace:
+    if len(trace) < 100:
+        for i in trace_with_pars:
             print(i)
-            for stack in converter.trace[i]:
+            for stack in trace_with_pars[i]:
                 print(f"\t{stack}")
 
-    tree_dict, path_dict = create_tree(converter.trace)
+    if not os.path.exists(out_dir):
+        os.mkdir(out_dir)
+    cats_to_cycles = create_simple_flame_graph(
+        trace_classified, control_reg_updates_per_cycle, out_dir
+    )
+    print(f"End creating simple flame graph: {datetime.now()}")
+    write_cell_stats(
+        cell_to_active_cycles,
+        cats_to_cycles,
+        cells_to_components,
+        component_to_num_fsms,
+        len(trace),
+        out_dir,
+    )
+    print(f"End writing cell stats: {datetime.now()}")
+    tree_dict, path_dict = create_tree(trace)
     path_to_edges, all_edges = create_edge_dict(path_dict)
 
-    create_aggregate_tree(converter.trace, out_dir, tree_dict, path_dict)
-    create_tree_rankings(
-        converter.trace, tree_dict, path_dict, path_to_edges, all_edges, out_dir
-    )
-    create_flame_groups(converter.trace, flame_out, out_dir)
-    compute_timeline(converter.trace, cells_to_components, main_component, out_dir)
-    print(f"End time: {datetime.now()}")
-    write_cell_stats(converter.cell_to_active_cycles, out_dir)
+    create_aggregate_tree(trace, out_dir, tree_dict, path_dict)
+    create_tree_rankings(trace, tree_dict, path_dict, path_to_edges, all_edges, out_dir)
+    flat_flame_map, scaled_flame_map = create_flame_maps(trace_with_pars)
+    write_flame_maps(flat_flame_map, scaled_flame_map, out_dir, flame_out)
+
+    compute_timeline(trace, fsm_events, control_reg_updates, main_fullname, out_dir)
 
     if adl_mapping_file is not None:  # emit ADL flame graphs.
         print("Computing ADL flames...")
-        adl_trace, mixed_trace = convert_trace(converter.trace, adl_mapping_file)
-        adl_flat_flame = os.path.join(out_dir, "adl-flat-flame.folded")
-        adl_scaled_flame = os.path.join(out_dir, "adl-scaled-flame.folded")
-        create_flame_groups(
-            adl_trace, adl_flat_flame, out_dir, scaled_flame_out_file=adl_scaled_flame
+        adl_flat_flame, mixed_flat_flame = convert_flame_map(
+            flat_flame_map, adl_mapping_file
         )
-        mixed_flat_flame = os.path.join(out_dir, "mixed-flat-flame.folded")
-        mixed_scaled_flame = os.path.join(out_dir, "mixed-scaled-flame.folded")
-        create_flame_groups(
-            mixed_trace,
-            mixed_flat_flame,
+        adl_scaled_flame, mixed_scaled_flame = convert_flame_map(
+            scaled_flame_map, adl_mapping_file
+        )
+        adl_flat_flame_file = os.path.join(out_dir, "adl-flat-flame.folded")
+        adl_scaled_flame_file = os.path.join(out_dir, "adl-scaled-flame.folded")
+        write_flame_maps(
+            adl_flat_flame,
+            adl_scaled_flame,
             out_dir,
-            scaled_flame_out_file=mixed_scaled_flame,
+            adl_flat_flame_file,
+            adl_scaled_flame_file,
         )
+
+        mixed_flat_flame_file = os.path.join(out_dir, "mixed-flat-flame.folded")
+        mixed_scaled_flame_file = os.path.join(out_dir, "mixed-scaled-flame.folded")
+        write_flame_maps(
+            mixed_flat_flame,
+            mixed_scaled_flame,
+            out_dir,
+            mixed_flat_flame_file,
+            mixed_scaled_flame_file,
+        )
+
+    print(f"End time: {datetime.now()}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 4:
+    if len(sys.argv) > 5:
         vcd_filename = sys.argv[1]
         cells_json = sys.argv[2]
-        out_dir = sys.argv[3]
-        flame_out = sys.argv[4]
-        if len(sys.argv) > 5:
-            adl_mapping_file = sys.argv[5]
+        fsms_json = sys.argv[3]
+        out_dir = sys.argv[4]
+        flame_out = sys.argv[5]
+        if len(sys.argv) > 6:
+            adl_mapping_file = sys.argv[6]
         else:
             adl_mapping_file = None
-        print(adl_mapping_file)
-        main(vcd_filename, cells_json, adl_mapping_file, out_dir, flame_out)
+        print(f"ADL mapping file: {adl_mapping_file}")
+        main(vcd_filename, cells_json, fsms_json, adl_mapping_file, out_dir, flame_out)
     else:
         args_desc = [
             "VCD_FILE",
             "CELLS_JSON",
+            "FSMS_JSON",
             "OUT_DIR",
             "FLATTENED_FLAME_OUT",
             "[ADL_MAP_JSON]",

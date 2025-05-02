@@ -104,7 +104,7 @@ impl Named for StaticPromotion {
                 "Whether to perform compaction.  True by Default ",
                 ParseVal::Bool(true),
                 PassOpt::parse_bool,
-            )
+            ),
         ]
     }
 }
@@ -192,6 +192,9 @@ impl StaticPromotion {
                     + APPROX_IF_SIZE
             }
             ir::Control::Static(sc) => Self::approx_size_static(sc, false),
+            ir::Control::FSMEnable(_) => {
+                todo!("should not encounter fsm nodes")
+            }
         }
     }
 

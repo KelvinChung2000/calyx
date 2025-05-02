@@ -1,5 +1,5 @@
 use super::Attribute;
-use crate::{attribute::SetAttribute, InlineAttributes};
+use crate::{InlineAttributes, attribute::SetAttribute};
 use calyx_utils::{CalyxResult, GPosIdx, WithPos};
 use itertools::Itertools;
 use linked_hash_map::LinkedHashMap;
@@ -111,6 +111,16 @@ impl Attributes {
                 self.hinfo.attrs.insert(attr, val);
             }
         }
+    }
+    pub fn insert_set<S>(&mut self, key: S, val: u32)
+    where
+        S: Into<SetAttribute>,
+    {
+        self.hinfo
+            .set_attrs
+            .entry(key.into())
+            .or_default()
+            .insert(val);
     }
 
     /// Get the value associated with an attribute key

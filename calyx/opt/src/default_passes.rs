@@ -3,11 +3,12 @@ use crate::pass_manager::PassResult;
 use crate::passes::{
     AddGuard, Canonicalize, CellShare, ClkInsertion, CollapseControl, CombProp,
     CompileInvoke, CompileRepeat, CompileStatic, ComponentInliner,
-    DataPathInfer, DeadAssignmentRemoval, DeadCellRemoval, DeadGroupRemoval,
-    DefaultAssigns, Externalize, GoInsertion, GroupToInvoke, GroupToSeq,
-    InferShare, LowerGuards, MergeAssign, Papercut, ProfilerInstrumentation,
-    RemoveIds, ResetInsertion, SimplifyStaticGuards, SimplifyWithControl,
-    StaticFSMOpts, StaticInference, StaticInliner, StaticPromotion,
+    ConstantPortProp, DataPathInfer, DeadAssignmentRemoval, DeadCellRemoval,
+    DeadGroupRemoval, DefaultAssigns, Externalize, GoInsertion, GroupToInvoke,
+    GroupToSeq, InferShare, LowerGuards, MergeAssign, Papercut,
+    ProfilerInstrumentation, RemoveIds, ResetInsertion, SimplifyStaticGuards,
+    SimplifyWithControl, StaticFSMAllocation, StaticFSMOpts, StaticInference,
+    StaticInliner, StaticPromotion, StaticRepeatFSMAllocation,
     SynthesisPapercut, TopDownCompileControl, UnrollBounded, WellFormed,
     WireInliner, WrapMain,
 };
@@ -45,6 +46,8 @@ impl PassManager {
 
         // Compilation passes
         pm.register_pass::<StaticInliner>()?;
+        pm.register_pass::<StaticFSMAllocation>()?;
+        pm.register_pass::<StaticRepeatFSMAllocation>()?;
         pm.register_pass::<StaticFSMOpts>()?;
         pm.register_pass::<CompileStatic>()?;
         pm.register_pass::<CompileInvoke>()?;
@@ -78,6 +81,7 @@ impl PassManager {
         pm.register_pass::<HoleInliner>()?;
         pm.register_pass::<RemoveIds>()?;
         pm.register_pass::<ExternalToRef>()?;
+        pm.register_pass::<ConstantPortProp>()?;
 
         // instrumentation pass to collect profiling information
         pm.register_pass::<ProfilerInstrumentation>()?;
@@ -99,6 +103,7 @@ impl PassManager {
                 InferShare,
                 ComponentInliner,
                 CombProp,
+                ConstantPortProp,
                 DeadCellRemoval, // Clean up dead wires left by CombProp
                 CellShare,       // LiveRangeAnalaysis should handle comb groups
                 SimplifyWithControl, // Must run before compile-invoke
@@ -110,6 +115,36 @@ impl PassManager {
                 CollapseControl,
             ]
         );
+
+        register_alias!(
+            pm,
+            "fsm-opt",
+            [
+                DataPathInfer,
+                CollapseControl,
+                CompileSyncWithoutSyncReg,
+                GroupToSeq,
+                DeadAssignmentRemoval,
+                GroupToInvoke,
+                ComponentInliner,
+                CombProp,
+                DeadCellRemoval,
+                CellShare,
+                SimplifyWithControl,
+                CompileInvoke,
+                StaticInference,
+                StaticPromotion,
+                DeadGroupRemoval,
+                CollapseControl,
+                StaticRepeatFSMAllocation,
+                StaticFSMAllocation,
+                DeadGroupRemoval,
+                MergeAssign,
+                CompileRepeat,
+                TopDownCompileControl,
+            ]
+        );
+
         register_alias!(
             pm,
             "compile",
@@ -122,7 +157,7 @@ impl PassManager {
                 StaticFSMOpts,
                 CompileStatic,
                 DeadGroupRemoval,
-                TopDownCompileControl
+                TopDownCompileControl,
             ]
         );
         register_alias!(
@@ -161,12 +196,13 @@ impl PassManager {
             pm,
             "profiler",
             [
-                StaticInliner,
-                CompileStatic,
-                CompileRepeat,
+                "validate",
                 CompileInvoke,
                 ProfilerInstrumentation,
-                "all"
+                "pre-opt",
+                "compile",
+                "post-opt",
+                "lower"
             ]
         );
 

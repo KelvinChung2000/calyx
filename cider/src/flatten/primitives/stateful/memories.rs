@@ -1,4 +1,4 @@
-use cider_idx::{iter::SplitIndexRange, maps::IndexedMap, IndexRef};
+use cider_idx::{IndexRef, iter::SplitIndexRange, maps::IndexedMap};
 use itertools::Itertools;
 
 use crate::{
@@ -9,15 +9,15 @@ use crate::{
             prelude::{AssignedValue, GlobalPortIdx, PortValue},
         },
         primitives::{
-            declare_ports, declare_ports_no_signature, make_getters, ports,
+            Primitive, declare_ports, declare_ports_no_signature, make_getters,
+            ports,
             prim_trait::{RaceDetectionPrimitive, UpdateResult, UpdateStatus},
             utils::infer_thread_id,
-            Primitive,
         },
         structures::{
             environment::{
-                clock::{new_clock_pair, ClockMap, ReadSource, ValueWithClock},
                 PortMap,
+                clock::{ClockMap, ReadSource, ValueWithClock, new_clock_pair},
             },
             thread::{ThreadIdx, ThreadMap},
         },
@@ -112,21 +112,26 @@ impl Primitive for StdReg {
             done: Self::DONE,
             out_idx: Self::OUT];
 
-        let out_signal = port_map.insert_val_general(
-            out_idx,
-            AssignedValue::cell_value(self.internal_state.value.clone())
-                .with_clocks(self.internal_state.clocks),
-        )?;
-        let done_signal = port_map.insert_val_general(
-            done,
-            AssignedValue::cell_value(if self.done_is_high {
-                BitVecValue::new_true()
-            } else {
-                BitVecValue::new_false()
-            }),
-        )?;
+        let out_signal =
+            port_map[done].is_undef() || port_map[out_idx].is_undef();
 
-        Ok(out_signal | done_signal)
+        if out_signal {
+            port_map.insert_val_unchecked(
+                out_idx,
+                AssignedValue::cell_value(self.internal_state.value.clone())
+                    .with_clocks(self.internal_state.clocks),
+            );
+            port_map.insert_val_unchecked(
+                done,
+                AssignedValue::cell_value(if self.done_is_high {
+                    BitVecValue::new_true()
+                } else {
+                    BitVecValue::new_false()
+                }),
+            );
+        }
+
+        Ok(out_signal.into())
     }
 
     fn serialize(&self, code: Option<PrintCode>) -> Serializable {
@@ -499,10 +504,11 @@ impl CombMem {
             .collect_vec();
 
         assert_eq!(internal_state.len(), size.size());
-        assert!(data
-            .chunks_exact(byte_count as usize)
-            .remainder()
-            .is_empty());
+        assert!(
+            data.chunks_exact(byte_count as usize)
+                .remainder()
+                .is_empty()
+        );
 
         Self {
             base_port,
@@ -829,10 +835,11 @@ impl SeqMem {
             .collect_vec();
 
         assert_eq!(internal_state.len(), size.size());
-        assert!(data
-            .chunks_exact(byte_count as usize)
-            .remainder()
-            .is_empty());
+        assert!(
+            data.chunks_exact(byte_count as usize)
+                .remainder()
+                .is_empty()
+        );
 
         Self {
             base_port,
