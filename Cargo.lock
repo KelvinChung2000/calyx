@@ -619,6 +619,7 @@ dependencies = [
  "calyx-utils",
  "ciborium",
  "cider-idx",
+ "delegate",
  "fraction",
  "fst-writer",
  "fxhash",
@@ -681,6 +682,7 @@ name = "cider-idx"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.11",
+ "proptest",
  "serde",
  "smallvec",
 ]
@@ -1050,6 +1052,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "delegate"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b6483c2bbed26f97861cf57651d4f2b731964a28cd2257f934a4b452480d21"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
+]
+
+[[package]]
 name = "deranged"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1311,6 +1324,7 @@ dependencies = [
  "env_logger",
  "figment",
  "itertools 0.11.0",
+ "libc",
  "log",
  "once_cell",
  "pathdiff",
@@ -1863,9 +1877,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.169"
+version = "0.2.174"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5aba8db14291edd000dfcc4d620c7ebfb122c613afb886ca8803fa4e128a20a"
+checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
 
 [[package]]
 name = "libredox"
